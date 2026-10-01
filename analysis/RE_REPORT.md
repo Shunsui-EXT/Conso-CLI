@@ -249,6 +249,49 @@ The server does **not** clamp `p_base_zaps` / `p_spend_usd`: the credited value
 equals the client-submitted value to the cent. The client-side accounting is
 authoritative.
 
+### `consousers` row schema (full, observed post-onboarding)
+
+Reading the authenticated user's own row exposes the whole model:
+
+```
+id, google_id, consoname, total_zaps, account_created_at, per_hours_estimation,
+referral_code, referred_by, referral_count, created_at, updated_at,
+last_weekly_streak_claim, referral_bonus_zaps_earned, last_active_date,
+current_streak, longest_streak, access_verified_at, approx_country_code,
+x_user_id, x_username, x_connected_at, bonus_mission_claimed_id,
+bonus_mission_claimed_at, daily_zaps_earned, daily_zaps_date, boost_factor,
+is_banned, banned_at, ban_reason, signup_ip, signup_ip_subnet, x_profile_image,
+x_eligible
+```
+
+Anti-abuse columns: `is_banned`, `banned_at`, `ban_reason`, `signup_ip`,
+`signup_ip_subnet`, `daily_zaps_earned`/`daily_zaps_date` (daily cap tracking),
+`boost_factor`, `access_verified_at`.
+
+### Verified production run (CLI)
+
+```
+$ python main.py register 1
+register: ...+snjej6r1nm@gmail.com captcha solved
+register: ...+snjej6r1nm@gmail.com got code 989230
+[active] ...+snjej6r1nm@gmail.com :: registered
+
+$ python main.py farm --turns 5 --email ...
+farm: claude/claude-fable-5 +1.08 zaps
+farm: gemini/gemini-3-flash +0.11 zaps
+farm: claude/claude-sonnet-5 +0.18 zaps
+farm: gemini/gemini-3-pro +0.24 zaps
+farm: chatgpt/gpt-5-5-thinking +0.18 zaps
+farm done: 5 turns accepted, ~1.79 zaps
+
+$ # backend row:
+{"total_zaps":1.79,"daily_zaps_earned":1.79,"current_streak":1,
+ "is_banned":false,"boost_factor":1,"consoname":"agilecomet48"}
+# leaderboard rank: 28008 -> 27864
+```
+
+Zaps credited match the submitted values exactly.
+
 ## 5. Turn detection
 
 Injectors patch `window.fetch`, match a POST completion endpoint, clone the

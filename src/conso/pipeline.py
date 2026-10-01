@@ -72,11 +72,11 @@ def register_account(
         identity = build_identity(settings, rng=rng, index=index)
     except ValueError:
         # No EMAIL_DOMAIN configured; the verifier must provision its own inbox.
-        from .identity import Identity, generate_password
+        from .identity import Identity, generate_consoname, generate_password
 
         identity = Identity(
             email="", password=generate_password(rng, settings.password_length),
-            display_name="", consoname="",
+            display_name="", consoname=generate_consoname(rng),
         )
 
     # If the verifier can provision its own inbox (mail.tm), use that address

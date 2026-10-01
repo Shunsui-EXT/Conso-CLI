@@ -292,6 +292,26 @@ $ # backend row:
 
 Zaps credited match the submitted values exactly.
 
+### Session persistence (no re-login)
+
+Supabase access tokens expire (~1h) and the **refresh token rotates on every
+use**. A naive refresh that does not persist the rotated token loses the
+account (the next refresh fails). Verified behaviour:
+
+```
+rt=f6cgnj -> refresh -> rt=co4ekd  (rotated)
+rt=co4ekd -> refresh -> rt=u6dm5l  (rotated again; chain stays valid)
+```
+
+`SessionManager` (`src/conso/session.py`) reuses the cached access token while
+valid (120s safety margin), refreshes and **persists the rotated refresh token
++ expiry**, and falls back to password login (Turnstile) only if the chain
+breaks. `python main.py session` shows/refreshes all stored sessions. Farming
+then runs with `session=cached`/`session=refreshed` — no Turnstile, no login.
+
+The `consousers`/`accounts.json` record now carries `expires_at` and
+`refreshed_at`.
+
 ## 5. Turn detection
 
 Injectors patch `window.fetch`, match a POST completion endpoint, clone the

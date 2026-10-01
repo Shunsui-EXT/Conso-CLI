@@ -25,6 +25,7 @@ from .client import ConsoAPIError, ConsoClient
 from .config import Settings
 from .identity import build_identity
 from .pipeline import farm_turns_for_account, run_registration
+from .session import SessionManager
 from .storage import Store
 from .transport import Transport
 from .verifiers import build_verifier
@@ -183,7 +184,7 @@ def farm(
     total_zaps = 0.0
     solver = build_solver(Transport(settings))
     for record in records:
-        ok, zaps = farm_turns_for_account(settings, record, turns, solver=solver, logger=_log)
+        ok, zaps = farm_turns_for_account(settings, record, turns, solver=solver, store=store, logger=_log)
         total_ok += ok
         total_zaps += zaps
         store.update(record.email, total_zaps=zaps, status="farmed" if ok else record.status)
@@ -235,6 +236,34 @@ def solve(
         _log(f"solve failed: {exc}")
     finally:
         transport.close()
+
+
+@app.command()
+def session(
+    email: str = typer.Option("", help="Account email (empty = all accounts)."),
+    force: bool = typer.Option(False, "--force", help="Force a refresh now."),
+) -> None:
+    """Show/refresh stored sessions without re-authenticating."""
+    settings = Settings.from_env()
+    store = Store(settings.data_dir)
+    manager = SessionManager(settings, store)
+    solver = build_solver(Transport(settings))
+    records = store.all()
+    if email:
+        records = [r for r in records if r.email == email]
+    if not records:
+        _log("session: no accounts")
+        return
+    for record in records:
+        try:
+            result = manager.ensure_session(record, solver=solver, force_refresh=force)
+            fresh = next((r for r in store.all() if r.email == record.email), record)
+            _log(
+                f"{record.email} :: source={result.source} "
+                f"expires_in={int((fresh.expires_at or 0) - __import__('time').time())}s"
+            )
+        except ConsoAPIError as exc:
+            _log(f"{record.email} :: FAILED {exc}")
 
 
 def main() -> None:

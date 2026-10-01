@@ -88,6 +88,26 @@ All via `.env` (see `.env.example`). Key values:
 - **Open:** rate limits at scale; whether repeated plus-aliases on the same
   underlying mailbox get flagged; per-account daily caps.
 
+## Sessions (no re-login)
+
+Login requires solving Turnstile, so the pipeline persists and reuses sessions:
+
+- Registration stores `access_token`, `refresh_token`, and `expires_at`.
+- `SessionManager.ensure_session()` reuses the cached access token while valid,
+  otherwise **refreshes and persists the rotated refresh token** (Supabase
+  rotates the refresh token on every use), and only falls back to password
+  login (Turnstile) if the refresh chain breaks.
+- Farm resolves sessions through `SessionManager`, so `farm` runs with
+  `session=cached` / `session=refreshed` — **no Turnstile, no re-login**.
+
+```bash
+python main.py session            # show + refresh all stored sessions
+python main.py session --force    # force a refresh now
+```
+
+Verified: repeated refreshes rotate the token each time and the chain stays
+valid; `farm` reuses the cached session with zero re-authentication.
+
 ## End-to-end flow
 
 ```

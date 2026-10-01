@@ -28,6 +28,7 @@ from .client import ConsoAPIError, ConsoClient, Session
 from .concurrency import AdaptiveConcurrency, Pacer
 from .config import Settings
 from .identity import build_identity
+from .session import SessionManager, jwt_expiry
 from .storage import AccountRecord, Store
 from .transport import Transport
 from .verifiers import EmailVerifier
@@ -131,6 +132,7 @@ def register_account(
         record.user_id = session.user_id
         record.access_token = session.access_token
         record.refresh_token = session.refresh_token
+        record.expires_at = session.expires_at or jwt_expiry(session.access_token)
 
         # Create the Conso user row (extension passes the OAuth subject id).
         try:
@@ -272,59 +274,35 @@ def make_synthetic_turn(rng: random.Random, index: int) -> TurnSpec:
                     has_non_image_attachment=rng.random() < 0.1)
 
 
-def _looks_like_jwt(token: str) -> bool:
-    return token.count(".") == 2 and len(token) > 40
-
-
-def _token_ok(settings: Settings, access_token: str) -> bool:
-    """Probe the token with a cheap authed call."""
-    if not _looks_like_jwt(access_token):
-        return False
-    client = ConsoClient(settings)
-    try:
-        client.session = Session(
-            access_token=access_token, refresh_token="", user_id="", email=None,
-        )
-        return client.get_user() is not None
-    finally:
-        client.close()
-
-
 def farm_turns_for_account(
     settings: Settings,
     record: AccountRecord,
     turns: int,
     *,
     solver: CaptchaSolver | None = None,
+    store: Store | None = None,
     logger: LogFn | None = None,
 ) -> tuple[int, float]:
-    """Submit `turns` synthetic turns for one account. Returns (ok_count, zaps)."""
+    """Submit `turns` synthetic turns for one account. Returns (ok_count, zaps).
+
+    Sessions are resolved through SessionManager, which reuses the cached access
+    token, refreshes (persisting the rotated refresh token), and only falls back
+    to password login when the refresh chain breaks.
+    """
+    store = store or Store(settings.data_dir)
+    manager = SessionManager(settings, store)
     client = ConsoClient(settings)
     pacer = Pacer(settings.min_delay_seconds, settings.max_delay_seconds)
     ok = 0
     credited = 0.0
     try:
-        session: Session | None = None
-        # 1) reuse a stored access token if it still works
-        if record.access_token and _token_ok(settings, record.access_token):
-            client.session = Session(
-                access_token=record.access_token, refresh_token=record.refresh_token,
-                user_id=record.user_id, email=record.email,
-            )
-            session = client.session
-        # 2) refresh (Supabase refresh tokens are opaque, not JWTs)
-        if session is None and record.refresh_token:
-            try:
-                session = client.refresh(record.refresh_token)
-            except ConsoAPIError:
-                session = None
-        # 3) password login (needs Turnstile)
-        if session is None and record.password:
-            token = solver.solve_turnstile() if solver is not None else None
-            session = client.sign_in_password(record.email, record.password, captcha_token=token)
-        if session is None:
-            _log(logger, f"farm: {record.email} no session")
+        try:
+            result = manager.ensure_session(record, solver=solver)
+        except ConsoAPIError as exc:
+            _log(logger, f"farm: {record.email} no session: {exc}")
             return 0, 0.0
+        client.session = result.session
+        _log(logger, f"farm: {record.email} session={result.source}")
 
         rng = random.Random()
         for i in range(turns):

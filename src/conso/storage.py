@@ -17,6 +17,8 @@ SCHEMA_FIELDS = [
     "user_id",
     "access_token",
     "refresh_token",
+    "expires_at",
+    "refreshed_at",
     "proxy",
     "created_at",
     "status",
@@ -33,6 +35,8 @@ class AccountRecord:
     user_id: str = ""
     access_token: str = ""
     refresh_token: str = ""
+    expires_at: int = 0          # unix seconds; access_token expiry
+    refreshed_at: str = ""       # iso timestamp of last successful refresh
     proxy: str = ""
     created_at: str = ""
     status: str = "pending"

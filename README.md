@@ -88,6 +88,33 @@ All via `.env` (see `.env.example`). Key values:
 - **Open:** rate limits at scale; whether repeated plus-aliases on the same
   underlying mailbox get flagged; per-account daily caps.
 
+## Earning surfaces
+
+Beyond turn farming, the pipeline claims every mission/code path:
+
+| Surface | RPC | Reward |
+|---|---|---|
+| Daily check-in | `claim_daily_mission(daily-checkin-v1)` | +2 |
+| Tweet mission | `claim_daily_mission(tweet-about-conso-v1)` | +3 |
+| Article mission | `claim_bonus_mission(article-about-conso-v1)` | +15 |
+| Referral code | `redeem_referral_code` | varies |
+| Access code | `redeem_access_code` | varies |
+| Turn farming | `append_prompt` | per-turn formula |
+
+Claims are **idempotent per day** — a repeat returns `rate_limited`, treated as
+already-claimed. `get_todays_mission_claims` lists what's done, so runs skip it.
+
+```bash
+python main.py earn --list           # show available missions
+python main.py earn                  # claim all (all accounts)
+python main.py earn --referral CODE  # also redeem a referral code
+python main.py earn --access CODE    # also redeem an access code
+python main.py farm --turns 10       # claims missions THEN farms (--no-earn to skip)
+```
+
+`get_lifetime_platform_stats` returns per-platform aggregates
+(`credited_zaps`, `spend_usd`, `prompt_count`, …) for reporting.
+
 ## Sessions (no re-login)
 
 Login requires solving Turnstile, so the pipeline persists and reuses sessions:

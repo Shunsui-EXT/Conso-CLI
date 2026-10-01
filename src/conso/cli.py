@@ -23,6 +23,7 @@ from . import economy
 from .captcha import TURNSTILE_PAGE_URL, TURNSTILE_SITEKEY, build_solver
 from .client import ConsoAPIError, ConsoClient
 from .config import Settings
+from .earnings import MISSIONS, run_earnings
 from .identity import build_identity
 from .pipeline import farm_turns_for_account, run_registration
 from .session import SessionManager
@@ -152,6 +153,7 @@ def register(
 def farm(
     turns: int = typer.Option(10, help="Turns per account."),
     email: str = typer.Option("", help="Farm a single account by email."),
+    earn: bool = typer.Option(True, "--earn/--no-earn", help="Also claim daily/bonus missions."),
     dry_run: bool = typer.Option(False, "--dry-run", help="Compute payloads only, no network."),
 ) -> None:
     """Submit synthetic AI-usage turns to earn zaps."""
@@ -183,12 +185,27 @@ def farm(
     total_ok = 0
     total_zaps = 0.0
     solver = build_solver(Transport(settings))
+    manager = SessionManager(settings, store)
     for record in records:
+        # Claim missions first (cheap zaps), then farm turns.
+        if earn:
+            client = ConsoClient(settings)
+            try:
+                client.session = manager.ensure_session(record, solver=solver).session
+                summary = run_earnings(client, logger=_log)
+                mission_zaps = summary.total_zaps_after - summary.total_zaps_before
+                total_zaps += mission_zaps
+                _log(f"farm: {record.email} missions +{round(mission_zaps, 2)} zaps")
+            except ConsoAPIError as exc:
+                _log(f"farm: {record.email} earn skipped: {exc}")
+            finally:
+                client.close()
+
         ok, zaps = farm_turns_for_account(settings, record, turns, solver=solver, store=store, logger=_log)
         total_ok += ok
         total_zaps += zaps
         store.update(record.email, total_zaps=zaps, status="farmed" if ok else record.status)
-    _log(f"farm done: {total_ok} turns accepted, ~{round(total_zaps, 2)} zaps")
+    _log(f"farm done: {total_ok} turns accepted, ~{round(total_zaps, 2)} zaps total")
 
 
 @app.command()
@@ -264,6 +281,55 @@ def session(
             )
         except ConsoAPIError as exc:
             _log(f"{record.email} :: FAILED {exc}")
+
+
+@app.command()
+def earn(
+    email: str = typer.Option("", help="Account email (empty = all accounts)."),
+    referral: str = typer.Option("", help="Redeem a referral code."),
+    access: str = typer.Option("", help="Redeem an access code."),
+    missions: str = typer.Option("", help="Comma-separated mission ids (default: all)."),
+    list_only: bool = typer.Option(False, "--list", help="List available missions and exit."),
+) -> None:
+    """Claim daily/bonus missions and codes to earn zaps."""
+    if list_only:
+        for mid, meta in MISSIONS.items():
+            _log(f"{mid} :: +{meta['reward']} zaps :: {meta['kind']} :: {meta['label']}")
+        return
+
+    settings = Settings.from_env()
+    store = Store(settings.data_dir)
+    manager = SessionManager(settings, store)
+    solver = build_solver(Transport(settings))
+    records = store.all()
+    if email:
+        records = [r for r in records if r.email == email]
+    if not records:
+        _log("earn: no accounts")
+        raise typer.Exit(code=1)
+
+    target_missions = [m.strip() for m in missions.split(",") if m.strip()] or None
+    for record in records:
+        client = ConsoClient(settings)
+        try:
+            client.session = manager.ensure_session(record, solver=solver).session
+        except ConsoAPIError as exc:
+            _log(f"earn: {record.email} no session: {exc}")
+            continue
+        try:
+            summary = run_earnings(
+                client, missions=target_missions, referral_code=referral,
+                access_code=access, logger=_log,
+            )
+            delta = summary.total_zaps_after - summary.total_zaps_before
+            _log(
+                f"earn: {record.email} +{round(delta, 2)} zaps "
+                f"(total {round(summary.total_zaps_after, 2)}) "
+                f"rank {summary.rank_before}->{summary.rank_after}"
+            )
+            store.update(record.email, total_zaps=summary.total_zaps_after)
+        finally:
+            client.close()
 
 
 def main() -> None:

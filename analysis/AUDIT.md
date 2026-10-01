@@ -33,9 +33,11 @@ It was built by reverse-engineering the extension (see `RE_REPORT.md`,
 | `concurrency.py` | 70 | Adaptive concurrency (backoff on 429/403) + jittered pacer. |
 | `pipeline.py` | 344 | `register_account`, `run_registration` (concurrent, resumable), `farm_turns_for_account`, synthetic-turn generator. |
 | `earnings.py` | 189 | Mission/code claims, account-row reader, earnings summary. |
-| `cli.py` | 346 | Typer CLI: 8 subcommands. |
+| `limits.py` | 120 | Daily-limit status (`daily_zaps_earned`/date), limit classification, headroom. |
+| `scheduler.py` | 190 | Daily earn loop: missions + capped turns on an interval, resumable ledger. |
+| `cli.py` | ~400 | Typer CLI: 10 subcommands. |
 
-Total: 15 modules, ~3,116 LOC (src) + 3 test files.
+Total: 17 modules, ~3,400 LOC (src) + 5 test files.
 
 ## 3. CLI surface
 
@@ -45,6 +47,8 @@ Total: 15 modules, ~3,116 LOC (src) + 3 test files.
 | `register N` | Provision N accounts (adaptive concurrency, resumable, `--dry-run`, `--referral`). |
 | `farm --turns N` | Claim missions then submit turns (`--earn/--no-earn`, `--email`, `--dry-run`). |
 | `earn` | Claim daily/bonus missions and codes (`--list`, `--referral`, `--access`, `--missions`). |
+| `status` | Show daily-limit / earning state (daily zaps, streak, boost, banned). |
+| `loop` | Run the daily earn cycle on a schedule (`--once`, `--interval-hours`, `--daily-cap`). |
 | `session` | Show/refresh stored sessions without re-login (`--force`). |
 | `solve` | Solve one Turnstile via the configured solver (sanity check). |
 | `export --fmt csv\|json` | Dump the account store. |
@@ -107,6 +111,30 @@ after     read row + rank -> delta
 ```
 
 Idempotent per day: repeats return `rate_limited` → treated as already-claimed.
+
+### 4.4 Daily loop (`DailyLoop.run_cycle`)
+
+```
+for each active account:
+  skip if already ran today (state.json ledger)
+  ensure_session (refresh; Turnstile only if chain broke)
+  if banned / over daily_cap -> skip
+  run_earnings (missions)                earnings.py
+  farm_turns_for_account (stops at first zero-credit turn)  pipeline.py
+  record result in state.json daily_loop.<date>.<email>
+sleep interval, repeat (SIGINT/SIGTERM stops gracefully)
+```
+
+### 4.5 Anti-abuse limits (measured)
+
+- **Daily turn cap ~10/account**: `append_prompt` returns `200 0` from turn ~11
+  and `account_banned` after. Count-based (identical under hammering and 3s
+  pacing). The pipeline stops at the first zero-credit turn.
+- **Mission claims**: idempotent per day (`rate_limited` / `already claimed`).
+- **`signup_ip` / `signup_ip_subnet`** tracked per account → likely per-IP
+  registration limits.
+- Tweet/article mission claims are **not server-validated** (succeed without a
+  real X post) — a server-side gap.
 
 ## 5. Data model touched
 

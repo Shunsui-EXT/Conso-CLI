@@ -189,7 +189,8 @@ def farm(
     total_ok = 0
     total_zaps = 0.0
     solver = build_solver(Transport(settings))
-    manager = SessionManager(settings, store)
+    verifier = build_verifier(settings)
+    manager = SessionManager(settings, store, verifier=verifier)
     for record in records:
         # Claim missions first (cheap zaps), then farm turns.
         if earn:
@@ -205,7 +206,10 @@ def farm(
             finally:
                 client.close()
 
-        ok, zaps = farm_turns_for_account(settings, record, turns, solver=solver, store=store, logger=_log)
+        ok, zaps = farm_turns_for_account(
+            settings, record, turns, solver=solver, store=store,
+            verifier=verifier, logger=_log,
+        )
         total_ok += ok
         total_zaps += zaps
         store.update(record.email, total_zaps=zaps, status="farmed" if ok else record.status)
@@ -395,7 +399,8 @@ def loop(
         max_cycles=1 if once else cycles,
         daily_cap=daily_cap,
     )
-    runner = DailyLoop(settings, store, config=config, solver=solver, logger=_log)
+    runner = DailyLoop(settings, store, config=config, solver=solver,
+                       verifier=build_verifier(settings), logger=_log)
 
     def _handle(signum, frame):  # noqa: ANN001, ARG001
         _log("loop: stop requested, finishing current account...")
@@ -412,6 +417,30 @@ def loop(
     else:
         runner.run_forever()
         _log("loop stopped")
+
+
+@app.command()
+def recover(
+    email: str = typer.Option("", help="Account email (empty = all accounts)."),
+) -> None:
+    """Recover a session (refresh -> password -> email OTP) without re-registering."""
+    settings = Settings.from_env()
+    store = Store(settings.data_dir)
+    manager = SessionManager(settings, store)
+    solver = build_solver(Transport(settings))
+    verifier = build_verifier(settings)
+    records = store.all()
+    if email:
+        records = [r for r in records if r.email == email]
+    if not records:
+        _log("recover: no accounts")
+        raise typer.Exit(code=1)
+    for record in records:
+        try:
+            result = manager.recover(record, solver=solver, verifier=verifier)
+            _log(f"recover: {record.email} :: OK source={result.source}")
+        except ConsoAPIError as exc:
+            _log(f"recover: {record.email} :: FAILED {exc}")
 
 
 def main() -> None:

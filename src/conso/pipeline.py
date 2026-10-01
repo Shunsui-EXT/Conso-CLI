@@ -286,6 +286,7 @@ def farm_turns_for_account(
     *,
     solver: CaptchaSolver | None = None,
     store: Store | None = None,
+    verifier: EmailVerifier | None = None,
     logger: LogFn | None = None,
 ) -> tuple[int, float]:
     """Submit `turns` synthetic turns for one account. Returns (ok_count, zaps).
@@ -295,7 +296,7 @@ def farm_turns_for_account(
     to password login when the refresh chain breaks.
     """
     store = store or Store(settings.data_dir)
-    manager = SessionManager(settings, store)
+    manager = SessionManager(settings, store, verifier=verifier)
     client = ConsoClient(settings)
     pacer = Pacer(settings.min_delay_seconds, settings.max_delay_seconds)
     ok = 0
@@ -309,9 +310,10 @@ def farm_turns_for_account(
     try:
         try:
             result = manager.ensure_session(record, solver=solver)
-        except ConsoAPIError as exc:
-            _log(logger, f"farm: {record.email} no session: {exc}")
-            return 0, 0.0
+        except ConsoAPIError:
+            # ensure_session failed -> try full recovery (refresh/password/OTP)
+            verifier = getattr(manager, "verifier", None)
+            result = manager.recover(record, solver=solver, verifier=verifier)
         client.session = result.session
         _log(logger, f"farm: {record.email} session={result.source}")
 

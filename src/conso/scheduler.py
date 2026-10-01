@@ -71,6 +71,7 @@ class DailyLoop:
         *,
         config: LoopConfig | None = None,
         solver=None,
+        verifier=None,
         logger: LogFn | None = None,
     ) -> None:
         self.settings = settings
@@ -78,7 +79,8 @@ class DailyLoop:
         self.config = config or LoopConfig()
         self.solver = solver
         self.logger = logger
-        self.manager = SessionManager(settings, store)
+        self.verifier = verifier
+        self.manager = SessionManager(settings, store, verifier=verifier)
         self._stop = threading.Event()
 
     def stop(self) -> None:
@@ -135,7 +137,7 @@ class DailyLoop:
 
         ok, farmed = farm_turns_for_account(
             self.settings, record, self.config.turns,
-            solver=self.solver, store=self.store, logger=self.logger,
+            solver=self.solver, store=self.store, verifier=self.verifier, logger=self.logger,
         )
         info["turns"] = ok
         info["zaps"] = round(info.get("zaps", 0.0) + farmed, 2)

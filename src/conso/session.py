@@ -51,10 +51,12 @@ class SessionManager:
     #: refresh when the access token has less than this many seconds left
     EXPIRY_MARGIN = 120
 
-    def __init__(self, settings: Settings, store: Store, *, transport: Transport | None = None) -> None:
+    def __init__(self, settings: Settings, store: Store, *, transport: Transport | None = None,
+                 verifier=None) -> None:
         self.settings = settings
         self.store = store
         self.transport = transport
+        self.verifier = verifier
         self._locks: dict[str, threading.Lock] = {}
         self._locks_guard = threading.Lock()
 
@@ -109,6 +111,68 @@ class SessionManager:
                 return SessionResult(session, "password")
 
             raise ConsoAPIError(f"no valid session for {fresh.email}")
+
+    # -- recovery ----------------------------------------------------------
+    def recover(
+        self,
+        record: AccountRecord,
+        *,
+        solver=None,
+        verifier=None,
+        otp_timeout: float = 120.0,
+    ) -> SessionResult:
+        """Recover a session when refresh + password both fail.
+
+        Order: refresh -> password login (Turnstile) -> email OTP to the stored
+        address (which keeps receiving mail as long as the temp.tf provider
+        account exists). Persists the new session on success.
+        """
+        with self._lock_for(record.email):
+            fresh = self._current_record(record.email) or record
+
+            if fresh.refresh_token:
+                try:
+                    return SessionResult(self._refresh(fresh), "refreshed")
+                except ConsoAPIError:
+                    pass
+
+            client = self._client()
+            try:
+                if fresh.password:
+                    token = solver.solve_turnstile() if solver is not None else None
+                    try:
+                        session = client.sign_in_password(
+                            fresh.email, fresh.password, captcha_token=token
+                        )
+                        self._persist(fresh.email, session)
+                        return SessionResult(session, "password")
+                    except ConsoAPIError:
+                        pass
+
+                # OTP fallback: request a fresh code, read it, exchange it.
+                if verifier is not None:
+                    otp_fn = getattr(verifier, "fetch_latest_otp", None)
+                    token = solver.solve_turnstile() if solver is not None else None
+                    client.sign_in_otp(fresh.email, captcha_token=token)
+                    code = None
+                    if callable(otp_fn):
+                        # poll the inbox for the freshly delivered code
+                        import time as _time
+
+                        deadline = _time.time() + otp_timeout
+                        while _time.time() < deadline:
+                            code = otp_fn(fresh.email)
+                            if code:
+                                break
+                            _time.sleep(3)
+                    if code:
+                        session = client.verify_otp(fresh.email, code)
+                        self._persist(fresh.email, session)
+                        return SessionResult(session, "otp")
+            finally:
+                client.close()
+
+            raise ConsoAPIError(f"could not recover session for {fresh.email}")
 
     # -- internals ---------------------------------------------------------
     def _client(self) -> ConsoClient:

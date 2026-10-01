@@ -82,6 +82,44 @@ def test_refresh_persists_rotated_token(monkeypatch):
     assert saved.expires_at > time.time()
 
 
+def test_recover_falls_back_to_otp(monkeypatch):
+    """When refresh + password fail, recover uses the email OTP path."""
+    store = FakeStore()
+    rec = AccountRecord(email="a@b.c", access_token="", refresh_token="bad", password="pw")
+    store.add(rec)
+    m = _manager(monkeypatch, store)
+
+    # refresh fails
+    def fail_refresh(self, rt):
+        raise session_mod.ConsoAPIError("refresh failed")
+
+    # password fails
+    def fail_login(self, email, pw, captcha_token=None):
+        raise session_mod.ConsoAPIError("login failed")
+
+    # otp send ok; verify returns a session
+    def fake_otp(self, email, captcha_token=None):
+        return {}
+
+    def fake_verify(self, email, token):
+        assert token == "123456"
+        return Session(access_token="newat", refresh_token="newrt", user_id="u",
+                       email=email, expires_at=int(time.time()) + 3600)
+
+    monkeypatch.setattr(session_mod.ConsoClient, "refresh", fail_refresh)
+    monkeypatch.setattr(session_mod.ConsoClient, "sign_in_password", fail_login)
+    monkeypatch.setattr(session_mod.ConsoClient, "sign_in_otp", fake_otp)
+    monkeypatch.setattr(session_mod.ConsoClient, "verify_otp", fake_verify)
+
+    class FakeVerifier:
+        def fetch_latest_otp(self, address):
+            return "123456"
+
+    result = m.recover(rec, verifier=FakeVerifier(), otp_timeout=5)
+    assert result.source == "otp"
+    assert store.all()[0].access_token == "newat"
+
+
 if __name__ == "__main__":
     import pytest
 

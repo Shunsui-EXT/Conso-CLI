@@ -244,6 +244,24 @@ class TempTfVerifier:
     def wait_for_otp(self, address: str, *, timeout: float = 120.0) -> str | None:
         return self.wait_for_link(address, timeout=timeout)
 
+    def fetch_latest_otp(self, address: str) -> str | None:
+        """Return the newest 6-digit OTP currently in the inbox (single pass)."""
+        try:
+            resp = self.transport.request(
+                "POST", f"{self.BASE}/api/check",
+                headers={"Content-Type": "application/json"},
+                json={"email": address, "wait": False}, retries=1, timeout=30,
+            )
+            data = resp.json() if resp.status_code == 200 else {}
+        except Exception:
+            return None
+        messages = data.get("data", []) if isinstance(data, dict) else []
+        for message in sorted(messages, key=lambda m: m.get("date", ""), reverse=True):
+            match = OTP_RE.search(_collect_strings(message))
+            if match:
+                return match.group(1)
+        return None
+
     def _poll(self, address: str, seen: set[str]) -> str | None:
         try:
             resp = self.transport.request(

@@ -25,6 +25,7 @@ from .client import ConsoAPIError, ConsoClient
 from .config import Settings
 from .earnings import MISSIONS, run_earnings
 from .identity import build_identity
+from .limits import get_daily_status
 from .pipeline import farm_turns_for_account, run_registration
 from .session import SessionManager
 from .storage import Store
@@ -330,6 +331,42 @@ def earn(
                 f"rank {summary.rank_before}->{summary.rank_after}"
             )
             store.update(record.email, total_zaps=summary.total_zaps_after)
+        finally:
+            client.close()
+
+
+@app.command()
+def status(
+    email: str = typer.Option("", help="Account email (empty = all accounts)."),
+) -> None:
+    """Show daily-limit / earning state for stored accounts."""
+    settings = Settings.from_env()
+    store = Store(settings.data_dir)
+    manager = SessionManager(settings, store)
+    solver = build_solver(Transport(settings))
+    records = store.all()
+    if email:
+        records = [r for r in records if r.email == email]
+    if not records:
+        _log("status: no accounts")
+        return
+    for record in records:
+        client = ConsoClient(settings)
+        try:
+            client.session = manager.ensure_session(record, solver=solver).session
+            st = get_daily_status(client)
+            if st is None:
+                _log(f"status: {record.email} :: no row")
+                continue
+            stale = " (stale, resets today)" if st.is_stale else ""
+            _log(
+                f"status: {record.email} :: total={round(st.total_zaps, 2)} "
+                f"daily={round(st.effective_daily, 2)}{stale} "
+                f"streak={st.current_streak}/{st.longest_streak} "
+                f"boost={st.boost_factor} banned={st.is_banned}"
+            )
+        except ConsoAPIError as exc:
+            _log(f"status: {record.email} :: FAILED {exc}")
         finally:
             client.close()
 

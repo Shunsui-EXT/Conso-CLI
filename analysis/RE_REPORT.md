@@ -292,6 +292,39 @@ $ # backend row:
 
 Zaps credited match the submitted values exactly.
 
+### Anti-abuse: daily turn cap (measured)
+
+`append_prompt` stops crediting after **~10 turns per account per day**. The
+server does not return an error at the cap — it returns `200 0` (zero credited).
+Continuing past that triggers `account_banned`:
+
+```
+turn 1..10   -> 200 credited (0.05..0.3 each)
+turn 11      -> 200 "0"          (soft flag: daily cap reached)
+turn 12      -> 400 account_banned
+```
+
+Measured identically under hammering (no delay) and paced (3s/turn), so the cap
+is **count-based, not rate-based**. `analysis/limit_probe.py` and
+`analysis/pace_probe.py` reproduce it.
+
+The pipeline now stops at the **first zero-credit turn** (`pipeline.py`), before
+the ban. `limits.py` surfaces `daily_zaps_earned` / `daily_zaps_date` (resets on
+date rollover) so a run can check headroom first.
+
+Mission claim limits (from the extension's error map):
+
+| Message | Meaning |
+|---|---|
+| `rate_limited` | short window ("try again in a minute") |
+| `mission already claimed today` | daily mission done |
+| `mission already claimed` / `tweet already used` | one-time done |
+| `account_banned` | hard stop |
+
+Note: tweet/article claims are **not server-validated** — claiming
+`tweet-about-conso-v1` / `article-about-conso-v1` succeeds without a real X
+post. This is a server-side gap, not something the client can influence.
+
 ### Session persistence (no re-login)
 
 Supabase access tokens expire (~1h) and the **refresh token rotates on every

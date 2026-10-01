@@ -325,11 +325,19 @@ def farm_turns_for_account(
             try:
                 result = client.append_prompt(entry, account.zaps, account.spend_usd)
                 ok += 1
-                credited += _extract_credited(result, account.zaps)
+                turn_credited = float(_extract_credited(result, account.zaps))
+                credited += turn_credited
                 _log(logger, f"farm: {record.email} {spec.platform}/{spec.model} +{account.zaps} zaps")
+
+                # Soft abuse flag: the server credits 0 instead of banning. This
+                # appears at the daily turn cap (~10/account); continuing after it
+                # triggers account_banned. Stop immediately.
+                if turn_credited == 0:
+                    _log(logger, f"farm: {record.email} credited=0 — daily turn cap reached, stopping")
+                    break
             except ConsoAPIError as exc:
                 _log(logger, f"farm: {record.email} append_prompt rejected: {exc}")
-                if exc.status in (429, 403):
+                if exc.status in (429, 403) or "account_banned" in str(exc):
                     break
         return ok, round(credited, 2)
     finally:

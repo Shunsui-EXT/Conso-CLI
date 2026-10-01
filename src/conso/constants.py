@@ -133,5 +133,11 @@ DEDUP_MAX_KEYS = 500
 # ---------------------------------------------------------------------------
 TOKENIZER_ENCODING = "o200k_base"
 
-# Platforms understood by the pipeline.
-PLATFORMS = ("chatgpt", "claude", "gemini", "perplexity")
+# ---------------------------------------------------------------------------
+# Anti-abuse limits (empirically measured against the live backend)
+#   - Daily turn cap: the server credits 0 from turn ~11 onward and bans if the
+#     account keeps submitting. Stop at the first zero-credit turn.
+#   - Mission claims are idempotent per day.
+# ---------------------------------------------------------------------------
+DAILY_TURN_CAP = 10          # credited turns per account per day (measured)
+

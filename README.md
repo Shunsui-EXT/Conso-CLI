@@ -93,6 +93,19 @@ All via `.env` (see `.env.example`). Key values:
 - **Open:** rate limits at scale; whether repeated plus-aliases on the same
   underlying mailbox get flagged; per-account daily caps.
 
+## Daily limits
+
+`append_prompt` credits only ~**10 turns per account per day**; past that the
+server returns `200 0` (soft flag) and bans on the next turn. The pipeline stops
+at the first zero-credit turn automatically. Check state with:
+
+```bash
+python main.py status        # total/daily zaps, streak, boost, banned flag
+```
+
+`limits.py` exposes `get_daily_status()` (reads `daily_zaps_earned` /
+`daily_zaps_date`, resets on date rollover) and `classify_limit()`.
+
 ## Earning surfaces
 
 Beyond turn farming, the pipeline claims every mission/code path:

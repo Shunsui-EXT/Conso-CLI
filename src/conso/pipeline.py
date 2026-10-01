@@ -58,7 +58,32 @@ def register_account(
 ) -> AccountRecord:
     """Provision a single account end-to-end."""
     rng = random.Random()
-    identity = build_identity(settings, rng=rng, index=index)
+    try:
+        identity = build_identity(settings, rng=rng, index=index)
+    except ValueError:
+        # No EMAIL_DOMAIN configured; the verifier must provision its own inbox.
+        from .identity import Identity, generate_password
+
+        identity = Identity(
+            email="", password=generate_password(rng, settings.password_length),
+            display_name="", consoname="",
+        )
+
+    # If the verifier can provision its own inbox (mail.tm), use that address
+    # instead of the EMAIL_DOMAIN-derived one.
+    create_inbox = getattr(verifier, "create_inbox", None)
+    if callable(create_inbox):
+        try:
+            address, password = create_inbox()
+            identity.email = address
+            identity.password = password
+        except Exception as exc:  # noqa: BLE001
+            _log(logger, f"register: inbox provision failed: {exc}")
+
+    if not identity.email:
+        record = AccountRecord.now(email="", status="failed", note="no email domain / inbox")
+        return record
+
     record = AccountRecord.now(email=identity.email, password=identity.password, consoname=identity.consoname)
     client = ConsoClient(settings)
     try:

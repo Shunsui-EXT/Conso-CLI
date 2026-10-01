@@ -209,6 +209,25 @@ def verify() -> None:
     transport.close()
 
 
+@app.command()
+def solve(
+    sitekey: str = typer.Option(TURNSTILE_SITEKEY, help="Turnstile sitekey."),
+    url: str = typer.Option(TURNSTILE_PAGE_URL, help="Page hosting the widget."),
+) -> None:
+    """Solve one Turnstile challenge via the configured solver (sanity check)."""
+    settings = Settings.from_env()
+    transport = Transport(settings)
+    solver = build_solver(transport)
+    _log(f"solve: provider={type(solver).__name__} sitekey={sitekey}")
+    try:
+        token = solver.solve_turnstile(sitekey=sitekey, page_url=url)
+        _log(f"solved: token_len={len(token)} token={token[:40]}...")
+    except Exception as exc:  # noqa: BLE001
+        _log(f"solve failed: {exc}")
+    finally:
+        transport.close()
+
+
 def main() -> None:
     try:
         app()

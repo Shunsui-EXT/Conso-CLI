@@ -162,7 +162,7 @@ def _collect_strings(obj: object) -> str:
 
 
 def build_verifier(settings) -> EmailVerifier:  # noqa: ANN001 - Settings, avoids import cycle
-    """Factory driven by env: VERIFIER = none|imap|tempmail."""
+    """Factory driven by env: VERIFIER = none|imap|tempmail|mailtm|ncaori."""
     import os
 
     kind = os.environ.get("VERIFIER", "none").strip().lower()
@@ -175,6 +175,14 @@ def build_verifier(settings) -> EmailVerifier:  # noqa: ANN001 - Settings, avoid
             folder=os.environ.get("IMAP_FOLDER", "INBOX"),
             sender_filter=os.environ.get("IMAP_SENDER_FILTER", ""),
         )
+    if kind == "mailtm":
+        return MailTmVerifier(Transport(settings))
+    if kind == "ncaori":
+        return NcaoriVerifier(
+            Transport(settings),
+            api_key=os.environ.get("NCAORI_API_KEY", ""),
+            base_url=os.environ.get("NCAORI_API", "https://temp-mail.ncaori.my.id"),
+        )
     if kind == "tempmail":
         return TempMailVerifier(
             Transport(settings),
@@ -182,3 +190,151 @@ def build_verifier(settings) -> EmailVerifier:  # noqa: ANN001 - Settings, avoid
             api_key=os.environ.get("TEMPMAIL_KEY", ""),
         )
     return NoopVerifier()
+
+
+# ---------------------------------------------------------------------------
+# mail.tm (https://mail.tm) — free, no API key. Creates an inbox on demand.
+# ---------------------------------------------------------------------------
+class MailTmVerifier:
+    """Provision + poll a mail.tm inbox.
+
+    Flow: GET /domains -> POST /accounts -> POST /token -> poll /messages.
+    The created address/password/token are exposed so the identity generator can
+    reuse the same inbox for the account being registered.
+    """
+
+    BASE = "https://api.mail.tm"
+
+    def __init__(self, transport: Transport, *, domain: str = "", password: str = "") -> None:
+        self.transport = transport
+        self.domain = domain
+        self.password = password
+        self.address = ""
+        self.token = ""
+
+    def _headers(self) -> dict[str, str]:
+        headers = {"Content-Type": "application/json", "Accept": "application/json"}
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+        return headers
+
+    def create_inbox(self, local_part: str = "") -> tuple[str, str]:
+        """Create an inbox; returns (address, password)."""
+        domain = self.domain
+        if not domain:
+            resp = self.transport.request("GET", f"{self.BASE}/domains", retries=0)
+            domains = resp.json() if resp.status_code == 200 else []
+            active = [d for d in domains if d.get("isActive") and not d.get("isPrivate")]
+            if not active:
+                raise RuntimeError("mail.tm returned no active public domains")
+            domain = active[0]["domain"]
+
+        import secrets
+        import string
+
+        local = local_part or "".join(secrets.choice(string.ascii_lowercase + string.digits) for _ in range(12))
+        address = f"{local}@{domain}"
+        password = self.password or ("Pw!" + "".join(
+            secrets.choice(string.ascii_letters + string.digits) for _ in range(14)))
+
+        resp = self.transport.request(
+            "POST", f"{self.BASE}/accounts", headers=self._headers(),
+            json={"address": address, "password": password}, retries=0,
+        )
+        if resp.status_code not in (200, 201):
+            raise RuntimeError(f"mail.tm account create failed ({resp.status_code}): {resp.text[:160]}")
+        self.address = address
+        self._login(address, password)
+        return address, password
+
+    def _login(self, address: str, password: str) -> None:
+        resp = self.transport.request(
+            "POST", f"{self.BASE}/token", headers={"Content-Type": "application/json"},
+            json={"address": address, "password": password}, retries=0,
+        )
+        data = resp.json() if resp.status_code == 200 else {}
+        self.token = data.get("token", "")
+        if not self.token:
+            raise RuntimeError(f"mail.tm token failed ({resp.status_code})")
+
+    def wait_for_link(self, address: str, *, timeout: float = 120.0) -> str | None:
+        if not self.token:
+            if not self.address:
+                self.address = address
+            return None
+        deadline = time.time() + timeout
+        seen: set[str] = set()
+        while time.time() < deadline:
+            link = self._poll(seen)
+            if link:
+                return link
+            time.sleep(3)
+        return None
+
+    def _poll(self, seen: set[str]) -> str | None:
+        try:
+            resp = self.transport.request(
+                "GET", f"{self.BASE}/messages", headers=self._headers(), retries=0,
+            )
+            data = resp.json() if resp.status_code == 200 else {}
+        except Exception:
+            return None
+        messages = data.get("hydra:member", []) if isinstance(data, dict) else []
+        for message in messages:
+            msg_id = str(message.get("id", ""))
+            if not msg_id or msg_id in seen:
+                continue
+            seen.add(msg_id)
+            # fetch the full message body
+            detail = self.transport.request(
+                "GET", f"{self.BASE}/messages/{msg_id}", headers=self._headers(), retries=0,
+            )
+            body = _collect_strings(detail.json() if detail.status_code == 200 else message)
+            match = LINK_RE.search(body) or OTP_RE.search(body)
+            if match:
+                return match.group(0)
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Ncaori Mail+ (https://temp-mail.ncaori.my.id) — Developer API key required.
+# ---------------------------------------------------------------------------
+class NcaoriVerifier:
+    """Poll a Ncaori Mail+ inbox via /api/v1/emails?recipient=<addr>."""
+
+    def __init__(self, transport: Transport, *, api_key: str,
+                 base_url: str = "https://temp-mail.ncaori.my.id") -> None:
+        self.transport = transport
+        self.api_key = api_key
+        self.base_url = base_url.rstrip("/")
+
+    def wait_for_link(self, address: str, *, timeout: float = 120.0) -> str | None:
+        deadline = time.time() + timeout
+        seen: set[str] = set()
+        while time.time() < deadline:
+            link = self._poll(address, seen)
+            if link:
+                return link
+            time.sleep(3)
+        return None
+
+    def _poll(self, address: str, seen: set[str]) -> str | None:
+        try:
+            resp = self.transport.request(
+                "GET", f"{self.base_url}/api/v1/emails",
+                headers={"Authorization": f"Bearer {self.api_key}", "Accept": "application/json"},
+                data={"recipient": address}, retries=0,
+            )
+            data = resp.json() if resp.status_code == 200 else {}
+        except Exception:
+            return None
+        for message in data.get("emails", []) if isinstance(data, dict) else []:
+            msg_id = str(message.get("id", ""))
+            if not msg_id or msg_id in seen:
+                continue
+            seen.add(msg_id)
+            body = _collect_strings(message)
+            match = LINK_RE.search(body) or OTP_RE.search(body)
+            if match:
+                return match.group(0)
+        return None

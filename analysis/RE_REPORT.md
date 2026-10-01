@@ -115,6 +115,68 @@ which is processed without any captcha check (an invalid token yields
 Turnstile bypass — but the extension's OAuth client is bound to the extension's
 `chromiumapp.org` redirect and cannot be reused off-extension.
 
+### Turnstile bypass (verified end-to-end)
+
+The token that Supabase accepts must be minted on the **real** verify-human
+page, not a stub. The page only renders the widget when `redirect_uri` is one
+of the extension's own redirect URIs (extracted from the page bundle):
+
+```
+https://bjibbmkefnaamkenamdppfengeepadpi.chromiumapp.org/
+https://mfjolkgcoehffnccojgdegniohfejfml.chromiumapp.org/
+consomobileapp://verify-human
+```
+
+Verified working chain:
+
+```
+POST http://127.0.0.1:8877/solve
+  {"type":"turnstile","real_page":true,"sitekey":"0x4AAAAAAEzmjKoKI6TA61_6",
+   "url":"https://www.conso.xyz/verify-human?redirect_uri=<whitelisted>"}
+  -> {"solved":true,"token":"1.rNXgp..."}          # ~17-50s, headless+headed
+
+POST /auth/v1/signup
+  {"email":...,"password":...,"gotrue_meta_security":{"captcha_token":"<token>"}}
+  -> 200, user created                              # captcha gate cleared
+```
+
+Solve is stochastic: the route-intercept (stub) token is rejected by Supabase
+(`invalid-input-response`); only the real-page token works, and it succeeds
+roughly 1 in 2-5 attempts, so the pipeline retries.
+
+### Email-domain allowlist
+
+Supabase additionally enforces `email_domain_not_allowed` on signup. Observed
+rule (via `analysis/domain_probe.py`):
+
+| Domain | Result |
+|---|---|
+| `gmail.com` | ALLOWED |
+| `outlook.com` | ALLOWED |
+| `uberip.com` (mail.tm) | BLOCKED |
+| `ncaori.my.id` (ncaori temp-mail) | BLOCKED |
+| `random-xyz-abc123.com` (custom) | BLOCKED |
+
+So the allowlist is a set of mainstream providers; disposable/temp-mail domains
+are rejected. Consequence: the mail.tm / ncaori inboxes cannot be used as the
+signup address directly. A working registration needs an address on an allowed
+provider — reachable via a catch-all on an allowed domain, a provider with
+alias/subaddressing (e.g. `you+tag@gmail.com`), or a purchased domain that is
+itself on the allowlist.
+
+### Email confirmation
+
+`mailer_autoconfirm=false`, so after signup the account is created with
+`confirmation_sent_at` set and **cannot log in until confirmed**:
+
+```
+POST /auth/v1/token?grant_type=password  -> 400 {"error_code":"email_not_confirmed"}
+```
+
+The confirmation link is mailed to the signup address; the verifier adapter
+fetches it. With a temp-mail domain blocked at signup, the verifier must be
+pointed at the inbox of an allowed provider.
+
 ## 5. Turn detection
 
 Injectors patch `window.fetch`, match a POST completion endpoint, clone the

@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import os
 import time
-from typing import Protocol
+from typing import Any, Protocol
 
 from .transport import Transport
 
@@ -143,9 +143,121 @@ class ManualSolver:
         return input("captcha_token> ").strip()
 
 
+# Chromium-app redirect URIs the Conso verify-human page accepts. The page only
+# renders the widget when redirect_uri is one of these, so the real-page solve
+# must target it. Kept in sync with conso.xyz's verify-human whitelist.
+CONSO_REDIRECT_URIS = [
+    "https://bjibbmkefnaamkenamdppfengeepadpi.chromiumapp.org/",
+    "https://mfjolkgcoehffnccojgdegniohfejfml.chromiumapp.org/",
+    "consomobileapp://verify-human",
+]
+
+
+class SolverServiceSolver:
+    """Client for a self-hosted captcha-solver sidecar (FastAPI, POST /solve).
+
+    Compatible with waguriagentic/captcha-solver. The Conso Turnstile must be
+    solved on the *real* verify-human page (stub tokens are rejected by
+    Supabase), so `real_page` defaults to True and the URL is built with a
+    whitelisted redirect_uri.
+    """
+
+    def __init__(
+        self,
+        transport: Transport,
+        *,
+        base_url: str = "http://127.0.0.1:8877",
+        token: str = "",
+        real_page: bool = True,
+        redirect_uri: str = CONSO_REDIRECT_URIS[0],
+        verify_url: str = "",
+        verify_payload: dict | None = None,
+        retries: int = 4,
+    ) -> None:
+        self.transport = transport
+        self.base_url = base_url.rstrip("/")
+        self.token = token
+        self.real_page = real_page
+        self.redirect_uri = redirect_uri
+        self.verify_url = verify_url
+        self.verify_payload = verify_payload
+        self.retries = retries
+
+    def _headers(self) -> dict[str, str]:
+        headers = {"Content-Type": "application/json"}
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+        return headers
+
+    def _page_url(self, page_url: str) -> str:
+        # The verify-human page requires a whitelisted redirect_uri to render.
+        if "redirect_uri=" in page_url:
+            return page_url
+        sep = "&" if "?" in page_url else "?"
+        from urllib.parse import quote
+        return f"{page_url}{sep}redirect_uri={quote(self.redirect_uri, safe='')}"
+
+    def solve_turnstile(self, *, sitekey: str = TURNSTILE_SITEKEY,
+                        page_url: str = TURNSTILE_PAGE_URL, timeout: float = 120.0) -> str:
+        last_error = ""
+        for attempt in range(1, self.retries + 1):
+            body: dict[str, Any] = {"type": "turnstile", "sitekey": sitekey, "timeout_s": int(timeout)}
+            if self.verify_url and self.verify_payload:
+                # Solve + verify in one shot (recommended for Supabase).
+                body["url"] = self._page_url(page_url)
+                body["verify_url"] = self.verify_url
+                body["verify_payload"] = self.verify_payload
+            elif self.real_page:
+                body["real_page"] = True
+                body["url"] = self._page_url(page_url)
+            else:
+                body["url"] = page_url
+            resp = self.transport.request(
+                "POST", f"{self.base_url}/solve", headers=self._headers(), json=body,
+                retries=0, timeout=timeout + 30,
+            )
+            if resp.status_code != 200:
+                last_error = f"http {resp.status_code}: {resp.text[:120]}"
+                continue
+            data = _safe_json(resp) or {}
+            token = data.get("token")
+            if token:
+                return token
+            last_error = data.get("error", "no token")
+        raise RuntimeError(f"turnstile solve failed after {self.retries} attempts: {last_error}")
+
+
+def _safe_json(resp: Any) -> Any:
+    try:
+        return resp.json()
+    except Exception:
+        return None
+
+
 def build_solver(transport: Transport) -> CaptchaSolver:
-    """Factory driven by env: CAPTCHA_PROVIDER = none|capsolver|2captcha|manual."""
+    """Factory driven by env.
+
+    CAPTCHA_PROVIDER = none | capsolver | 2captcha | manual | service
+      service  -> local/self-hosted sidecar (SOLVER_URL, SOLVER_TOKEN)
+    """
     provider = os.environ.get("CAPTCHA_PROVIDER", "none").strip().lower()
+    if provider == "service":
+        verify_url = os.environ.get("CAPTCHA_VERIFY_URL", "").strip()
+        verify_payload = None
+        if verify_url:
+            verify_payload = {
+                "secret": os.environ.get("CAPTCHA_VERIFY_SECRET", ""),
+                "response": "__TOKEN__",
+            }
+        return SolverServiceSolver(
+            transport,
+            base_url=os.environ.get("SOLVER_URL", "http://127.0.0.1:8877"),
+            token=os.environ.get("SOLVER_TOKEN", ""),
+            real_page=os.environ.get("SOLVER_REAL_PAGE", "1") == "1",
+            redirect_uri=os.environ.get("CONSO_REDIRECT_URI", CONSO_REDIRECT_URIS[0]),
+            verify_url=verify_url,
+            verify_payload=verify_payload,
+        )
     if provider == "capsolver":
         return CapSolverSolver(os.environ.get("CAPSOLVER_API_KEY", ""), transport)
     if provider == "2captcha":

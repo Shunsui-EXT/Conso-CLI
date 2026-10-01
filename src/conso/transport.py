@@ -126,8 +126,10 @@ class Transport:
         json: Any = None,
         data: Any = None,
         retries: int | None = None,
+        timeout: float | None = None,
     ) -> cffi_requests.Response:
         attempts = (retries if retries is not None else self.settings.max_retries) + 1
+        effective_timeout = timeout if timeout is not None else self.settings.request_timeout
         last_exc: Exception | None = None
         for attempt in range(attempts):
             proxies = self._proxies()
@@ -139,7 +141,7 @@ class Transport:
                     json=json,
                     data=data,
                     proxies=proxies,
-                    timeout=self.settings.request_timeout,
+                    timeout=effective_timeout,
                 )
                 if resp.status_code in self.RETRY_STATUS and attempt < attempts - 1:
                     self.pool.report(proxies["https"] if proxies else None, False)

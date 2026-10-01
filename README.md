@@ -71,21 +71,48 @@ All via `.env` (see `.env.example`). Key values:
 
 ## Status
 
-- **Verified:** extension extraction, backend endpoints, auth settings, RPC
-  signatures, zap formula, dedup semantics, tokenizer encoding, Turnstile
-  sitekey + enforcement, id_token captcha bypass.
-- **Captcha gate:** Conso enforces Cloudflare Turnstile on **all** Supabase auth
-  endpoints. Registration/login need a solved token (`CAPTCHA_PROVIDER`), or a
-  real Google id_token via `sign_in_id_token` (captcha-free).
+- **Verified end-to-end:** extension extraction, backend endpoints, RPC
+  signatures, zap formula, dedup semantics, tokenizer encoding; Turnstile
+  bypass (real-page solve -> `gotrue_meta_security.captcha_token` -> signup
+  200); email-domain allowlist (gmail/outlook allowed, temp-mail blocked);
+  email confirmation requirement.
+- **Turnstile:** Conso enforces Cloudflare Turnstile on **all** Supabase auth
+  endpoints. Solved via the local `captcha-solver` sidecar
+  (`scripts/start_solver.sh`, `:8877`), then submitted in the
+  `gotrue_meta_security` envelope. A stub token is rejected; the **real-page**
+  solve against `verify-human?redirect_uri=<whitelisted>` is required.
+- **Email wall:** signup rejects disposable domains
+  (`email_domain_not_allowed`). mail.tm (`uberip.com`) and ncaori are blocked.
+  Use a catch-all/alias on an **allowed** provider (gmail/outlook), then confirm
+  the address via the verifier.
 - **Unverified:** whether the server clamps client-supplied `p_base_zaps` /
-  `p_spend_usd`, and any server-side rate limits on `append_prompt`. The
-  pipeline is built to submit exactly what the real client would; server
-  clamping (if any) is observed at runtime.
+  `p_spend_usd`, and server-side rate limits on `append_prompt`.
 
 ## End-to-end flow
 
 ```
-register:  identity -> [Turnstile solve] -> /auth/v1/signup -> confirm (verifier)
-           -> /auth/v1/token?grant_type=password -> create_consouser -> store
-farm:      refresh/login -> economy.account_turn() -> append_prompt -> credited_zaps
+register:  identity
+           -> [Turnstile real-page solve @ :8877]        captcha.py
+           -> POST /auth/v1/signup + gotrue_meta_security captcha_token
+           -> confirm email (verifier)                    verifiers.py
+           -> POST /auth/v1/token?grant_type=password
+           -> RPC create_consouser
+           -> store                                        storage.py
+farm:      refresh/login
+           -> economy.account_turn()                       economy.py
+           -> RPC append_prompt {p_entry,p_base_zaps,p_spend_usd}
+           -> credited_zaps
 ```
+
+## Captcha solver sidecar
+
+The vendored `waguriagentic/captcha-solver` (FastAPI, CloakBrowser) runs locally:
+
+```bash
+bash scripts/start_solver.sh          # headed under Xvfb, :8877
+curl http://127.0.0.1:8877/health
+CAPTCHA_PROVIDER=service python main.py solve   # sanity check
+```
+
+The Conso solve is stochastic (~1/2-5); the pipeline retries. `SolverServiceSolver`
+defaults to `real_page` and auto-appends a whitelisted `redirect_uri`.

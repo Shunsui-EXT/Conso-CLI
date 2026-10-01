@@ -26,6 +26,9 @@ dist/
 build/
 *.log
 
+# Vendored upstream (large ONNX models; fetch via scripts/setup_solver.sh)
+vendor/
+
 # Original extension dump (large binaries)
 extension_original/*.crx
 extension_original/*.zip

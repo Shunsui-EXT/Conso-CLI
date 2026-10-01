@@ -163,6 +163,27 @@ Order matters: the extension shows the referral screen right after
 the code before onboarding (`create_consouser -> redeem_referral_code ->
 set_consoname`). Per-run override: `python main.py register 5 --referral CODE`.
 
+## Session recovery (reuse the signup address)
+
+**Yes — the temp.tf address can be reused later for OTP.** Verified live: an
+alias keeps receiving mail as long as the underlying provider account exists
+(temp.tf FAQ), and a fresh OTP delivered to a stored address verified back into
+a session. So an account is never locked out as long as its address is saved.
+
+Recovery order (used automatically when a session breaks):
+
+```bash
+python main.py recover            # refresh -> password (Turnstile) -> email OTP
+```
+
+1. **refresh** — reuse the rotated refresh token (no captcha).
+2. **password** — `sign_in_password` (needs a Turnstile solve).
+3. **email OTP** — `sign_in_otp` to the stored address, read the code from the
+   inbox, `verify_otp`. This is the path that proves the address is reusable.
+
+`farm` and `loop` auto-recover when `ensure_session` fails, so a broken session
+never needs a manual re-register.
+
 ## Sessions (no re-login)
 
 Login requires solving Turnstile, so the pipeline persists and reuses sessions:

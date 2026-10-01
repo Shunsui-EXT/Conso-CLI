@@ -139,10 +139,12 @@ def register(
     store = Store(settings.data_dir)
     verifier = build_verifier(settings)
     solver = build_solver(Transport(settings))
+    referral_code = referral or settings.default_referral_code
     _log(f"register start: count={count} concurrency<={settings.max_concurrency} "
-         f"verifier={type(verifier).__name__} solver={type(solver).__name__}")
+         f"verifier={type(verifier).__name__} solver={type(solver).__name__} "
+         f"referral={referral_code or '-'}")
     results = run_registration(
-        settings, count, referral_code=referral, store=store,
+        settings, count, referral_code=referral_code, store=store,
         verifier=verifier, solver=solver, logger=_log,
     )
     ok = sum(1 for r in results if r.status == "active")

@@ -140,20 +140,24 @@ def register_account(
         except ConsoAPIError as exc:
             _log(logger, f"register: create_consouser note: {exc}")
 
+        # Redeem the referral BEFORE onboarding: the extension shows the
+        # referral screen (redeem referral/access code) right after
+        # createConsouser and before picking a consoname.
+        if referral_code:
+            try:
+                client.redeem_referral_code(referral_code)
+                _log(logger, f"register: {identity.email} referral={referral_code}")
+            except ConsoAPIError as exc:
+                _log(logger, f"register: referral note: {exc}")
+
         # Complete onboarding: set the display name, matching the extension flow
-        # (createConsouser -> pick consoname -> ready) before any turn.
+        # (createConsouser -> referral -> pick consoname -> ready) before any turn.
         if identity.consoname:
             try:
                 client.set_consoname(identity.consoname)
                 _log(logger, f"register: {identity.email} consoname={identity.consoname}")
             except ConsoAPIError as exc:
                 _log(logger, f"register: set_consoname note: {exc}")
-
-        if referral_code:
-            try:
-                client.redeem_referral_code(referral_code)
-            except ConsoAPIError as exc:
-                _log(logger, f"register: referral note: {exc}")
 
         record.status = "active"
         record.note = "registered"

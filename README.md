@@ -115,6 +115,20 @@ python main.py farm --turns 10       # claims missions THEN farms (--no-earn to 
 `get_lifetime_platform_stats` returns per-platform aggregates
 (`credited_zaps`, `spend_usd`, `prompt_count`, …) for reporting.
 
+## Referral
+
+Every new account redeems a default referral code automatically. Set it once:
+
+```bash
+# .env
+DEFAULT_REFERRAL_CODE=CONSO-GG53G
+```
+
+Order matters: the extension shows the referral screen right after
+`create_consouser` and **before** picking a consoname, so the pipeline redeems
+the code before onboarding (`create_consouser -> redeem_referral_code ->
+set_consoname`). Per-run override: `python main.py register 5 --referral CODE`.
+
 ## Sessions (no re-login)
 
 Login requires solving Turnstile, so the pipeline persists and reuses sessions:

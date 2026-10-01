@@ -61,6 +61,9 @@ class Settings:
     password_length: int = 16
     display_name_prefix: str = "user"
 
+    # Referral applied to every newly registered account.
+    default_referral_code: str = ""
+
     # Anti-abuse pacing
     min_delay_seconds: float = 1.5
     max_delay_seconds: float = 6.0
@@ -88,6 +91,7 @@ class Settings:
             email_domain=_env("EMAIL_DOMAIN"),
             password_length=_env_int("PASSWORD_LENGTH", 16),
             display_name_prefix=_env("DISPLAY_NAME_PREFIX", "user"),
+            default_referral_code=_env("DEFAULT_REFERRAL_CODE"),
             min_delay_seconds=_env_float("MIN_DELAY_SECONDS", 1.5),
             max_delay_seconds=_env_float("MAX_DELAY_SECONDS", 6.0),
             data_dir=_env("DATA_DIR", "data"),

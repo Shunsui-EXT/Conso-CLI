@@ -47,6 +47,16 @@ def _log(default: LogFn | None, message: str) -> None:
         default(message)
 
 
+def _wait_for_code(verifier: EmailVerifier, address: str, *, timeout: float) -> str | None:
+    """Fetch a confirmation code/link from the verifier (wait_for_otp or link)."""
+    otp_fn = getattr(verifier, "wait_for_otp", None)
+    if callable(otp_fn):
+        result = otp_fn(address, timeout=timeout)
+        return str(result) if result else None
+    result = verifier.wait_for_link(address, timeout=timeout)
+    return str(result) if result else None
+
+
 def register_account(
     settings: Settings,
     *,
@@ -76,9 +86,16 @@ def register_account(
         try:
             address, password = create_inbox()
             identity.email = address
-            identity.password = password
+            if password:
+                identity.password = password
         except Exception as exc:  # noqa: BLE001
             _log(logger, f"register: inbox provision failed: {exc}")
+
+    # Supabase signup always requires a password, even for OTP-only inboxes.
+    if not identity.password:
+        from .identity import generate_password
+
+        identity.password = generate_password(rng, settings.password_length)
 
     if not identity.email:
         record = AccountRecord.now(email="", status="failed", note="no email domain / inbox")
@@ -94,15 +111,23 @@ def register_account(
             _log(logger, f"register: {identity.email} captcha solved")
 
         _log(logger, f"register: {identity.email} -> supabase signup")
-        client.sign_up_email(identity.email, identity.password, captcha_token=captcha_token)
+        signup = client.sign_up_email(identity.email, identity.password, captcha_token=captcha_token)
 
-        # If email confirmation is required, fetch the link via the verifier.
+        # Conso confirms via a 6-digit email OTP (not a link). Fetch it from the
+        # verifier and exchange it for a session.
+        session = None
         if verifier is not None:
-            link = verifier.wait_for_link(identity.email, timeout=60.0)
-            if link:
-                client.transport.request("GET", link)
+            code = _wait_for_code(verifier, identity.email, timeout=120.0)
+            if code:
+                _log(logger, f"register: {identity.email} got code {code}")
+                session = client.verify_otp(identity.email, code)
 
-        session = client.sign_in_password(identity.email, identity.password, captcha_token=captcha_token)
+        # Fallback: a project with auto-confirm lets password login through.
+        if session is None:
+            session = client.sign_in_password(
+                identity.email, identity.password, captcha_token=captcha_token
+            )
+
         record.user_id = session.user_id
         record.access_token = session.access_token
         record.refresh_token = session.refresh_token
@@ -112,6 +137,15 @@ def register_account(
             client.create_consouser(session.user_id)
         except ConsoAPIError as exc:
             _log(logger, f"register: create_consouser note: {exc}")
+
+        # Complete onboarding: set the display name, matching the extension flow
+        # (createConsouser -> pick consoname -> ready) before any turn.
+        if identity.consoname:
+            try:
+                client.set_consoname(identity.consoname)
+                _log(logger, f"register: {identity.email} consoname={identity.consoname}")
+            except ConsoAPIError as exc:
+                _log(logger, f"register: set_consoname note: {exc}")
 
         if referral_code:
             try:
@@ -277,7 +311,7 @@ def farm_turns_for_account(
                 has_non_image_attachment=spec.has_non_image_attachment,
             )
             entry = economy.build_entry(
-                account, timestamp=datetime.now(timezone.utc).isoformat()
+                account, timestamp=economy.js_isoformat(datetime.now(timezone.utc))
             )
             try:
                 result = client.append_prompt(entry, account.zaps, account.spend_usd)

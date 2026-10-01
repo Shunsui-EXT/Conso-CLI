@@ -162,10 +162,15 @@ def _collect_strings(obj: object) -> str:
 
 
 def build_verifier(settings) -> EmailVerifier:  # noqa: ANN001 - Settings, avoids import cycle
-    """Factory driven by env: VERIFIER = none|imap|tempmail|mailtm|ncaori."""
+    """Factory driven by env: VERIFIER = none|imap|tempmail|mailtm|ncaori|temptf."""
     import os
 
     kind = os.environ.get("VERIFIER", "none").strip().lower()
+    if kind == "temptf":
+        return TempTfVerifier(
+            Transport(settings),
+            provider=os.environ.get("TEMPTF_PROVIDER", "gmail"),
+        )
     if kind == "imap":
         return ImapVerifier(
             host=os.environ.get("IMAP_HOST", ""),
@@ -190,6 +195,75 @@ def build_verifier(settings) -> EmailVerifier:  # noqa: ANN001 - Settings, avoid
             api_key=os.environ.get("TEMPMAIL_KEY", ""),
         )
     return NoopVerifier()
+
+
+# ---------------------------------------------------------------------------
+# temp.tf (https://temp.tf) — real Gmail/Outlook/Hotmail addresses via plus-
+# aliases from a managed pool. No API key. These domains pass Conso's signup
+# allowlist (unlike mail.tm / ncaori).
+# ---------------------------------------------------------------------------
+class TempTfVerifier:
+    """Provision + poll a temp.tf inbox.
+
+    GET  /api/account?providers=<gmail|outlook|hotmail>&dot=0&plus=1 -> {email}
+    POST /api/check {email, wait}                                    -> {data:[...]}
+    """
+
+    BASE = "https://temp.tf"
+
+    def __init__(self, transport: Transport, *, provider: str = "gmail") -> None:
+        self.transport = transport
+        self.provider = provider
+        self.address = ""
+
+    def create_inbox(self, local_part: str = "") -> tuple[str, str]:
+        """Provision a real-provider alias address. Password is unused (OTP flow)."""
+        resp = self.transport.request(
+            "GET",
+            f"{self.BASE}/api/account?providers={self.provider}&dot=0&plus=1",
+            retries=1,
+        )
+        data = resp.json() if resp.status_code == 200 else {}
+        address = data.get("email", "")
+        if not address:
+            raise RuntimeError(f"temp.tf account failed ({resp.status_code}): {resp.text[:160]}")
+        self.address = address
+        return address, ""
+
+    def wait_for_link(self, address: str, *, timeout: float = 120.0) -> str | None:
+        """Return the first 6-digit OTP (or link) seen in the inbox."""
+        deadline = time.time() + timeout
+        seen: set[str] = set()
+        while time.time() < deadline:
+            code = self._poll(address, seen)
+            if code:
+                return code
+            time.sleep(3)
+        return None
+
+    def wait_for_otp(self, address: str, *, timeout: float = 120.0) -> str | None:
+        return self.wait_for_link(address, timeout=timeout)
+
+    def _poll(self, address: str, seen: set[str]) -> str | None:
+        try:
+            resp = self.transport.request(
+                "POST", f"{self.BASE}/api/check",
+                headers={"Content-Type": "application/json"},
+                json={"email": address, "wait": True}, retries=0, timeout=45,
+            )
+            data = resp.json() if resp.status_code == 200 else {}
+        except Exception:
+            return None
+        for message in data.get("data", []) if isinstance(data, dict) else []:
+            msg_id = str(message.get("id", ""))
+            if not msg_id or msg_id in seen:
+                continue
+            seen.add(msg_id)
+            body = _collect_strings(message)
+            match = OTP_RE.search(body) or LINK_RE.search(body)
+            if match:
+                return match.group(0)
+        return None
 
 
 # ---------------------------------------------------------------------------

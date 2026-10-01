@@ -71,37 +71,57 @@ All via `.env` (see `.env.example`). Key values:
 
 ## Status
 
-- **Verified end-to-end:** extension extraction, backend endpoints, RPC
-  signatures, zap formula, dedup semantics, tokenizer encoding; Turnstile
-  bypass (real-page solve -> `gotrue_meta_security.captcha_token` -> signup
-  200); email-domain allowlist (gmail/outlook allowed, temp-mail blocked);
-  email confirmation requirement.
-- **Turnstile:** Conso enforces Cloudflare Turnstile on **all** Supabase auth
-  endpoints. Solved via the local `captcha-solver` sidecar
-  (`scripts/start_solver.sh`, `:8877`), then submitted in the
-  `gotrue_meta_security` envelope. A stub token is rejected; the **real-page**
-  solve against `verify-human?redirect_uri=<whitelisted>` is required.
-- **Email wall:** signup rejects disposable domains
-  (`email_domain_not_allowed`). mail.tm (`uberip.com`) and ncaori are blocked.
-  Use a catch-all/alias on an **allowed** provider (gmail/outlook), then confirm
-  the address via the verifier.
-- **Unverified:** whether the server clamps client-supplied `p_base_zaps` /
-  `p_spend_usd`, and server-side rate limits on `append_prompt`.
+- **Verified end-to-end (real zaps credited):**
+  `temp.tf inbox -> Turnstile solve -> signup -> email OTP -> verify ->
+   create_consouser -> set consoname (onboarding) -> append_prompt (N turns) ->
+   zaps credited + leaderboard rank improves`.
+  Credited zaps equal the client-computed values exactly (server does not
+  clamp `p_base_zaps`/`p_spend_usd`).
+- **Turnstile:** enforced on all Supabase auth endpoints; solved via the local
+  sidecar; submitted in the `gotrue_meta_security` envelope. Stub tokens are
+  rejected — only the real-page solve works.
+- **Email:** temp.tf provides real `gmail.com`/`outlook.com`/`hotmail.com`
+  plus-aliases that pass Conso's allowlist (mail.tm / ncaori domains are
+  blocked). Confirmation is a **6-digit OTP**, not a link.
+- **Onboarding is mandatory:** `append_prompt` before `set_consoname` bans the
+  account (`account_banned`). The pipeline sets the consoname first.
+- **Open:** rate limits at scale; whether repeated plus-aliases on the same
+  underlying mailbox get flagged; per-account daily caps.
 
 ## End-to-end flow
 
 ```
-register:  identity
+register:  temp.tf inbox (real gmail/outlook alias)      verifiers.py
            -> [Turnstile real-page solve @ :8877]        captcha.py
            -> POST /auth/v1/signup + gotrue_meta_security captcha_token
-           -> confirm email (verifier)                    verifiers.py
-           -> POST /auth/v1/token?grant_type=password
+           -> read 6-digit OTP from inbox
+           -> POST /auth/v1/verify {type:email,token}     client.py
            -> RPC create_consouser
-           -> store                                        storage.py
+           -> PATCH consousers {consoname}   (onboarding) client.py
+           -> store                                       storage.py
 farm:      refresh/login
-           -> economy.account_turn()                       economy.py
+           -> economy.account_turn()                      economy.py
            -> RPC append_prompt {p_entry,p_base_zaps,p_spend_usd}
-           -> credited_zaps
+           -> credited_zaps (== submitted zaps)
+```
+
+## Required environment
+
+```bash
+VERIFIER=temptf
+TEMPTF_PROVIDER=gmail            # gmail | outlook | hotmail
+CAPTCHA_PROVIDER=service
+SOLVER_URL=http://127.0.0.1:8877
+# start the sidecar first:
+bash scripts/setup_solver.sh     # one-time (clones + installs)
+bash scripts/start_solver.sh     # run :8877
+```
+
+Then:
+
+```bash
+python main.py register 1        # real account, fully provisioned + onboarded
+python main.py farm --turns 10   # submit turns, earn zaps
 ```
 
 ## Captcha solver sidecar

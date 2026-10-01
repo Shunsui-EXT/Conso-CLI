@@ -31,6 +31,7 @@ from __future__ import annotations
 import math
 import re
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any
 
 from . import constants as C
@@ -51,6 +52,19 @@ except Exception:  # pragma: no cover
 def js_round(value: float) -> int:
     """JavaScript Math.round: round half toward +infinity."""
     return int(math.floor(value + 0.5))
+
+
+def js_isoformat(dt: datetime) -> str:
+    """Reproduce JavaScript `new Date().toISOString()` (UTC, millisecond, Z).
+
+    The extension submits `timestamp: new Date().toISOString()` — e.g.
+    `2026-10-01T18:17:11.429Z`. Python's `datetime.isoformat()` yields
+    `+00:00` and microsecond precision, which the backend rejects/mis-handles
+    (observed: the turn is recorded with 0 credit and the account is then
+    banned). Always emit the JS form.
+    """
+    dt = dt.astimezone(timezone.utc)
+    return dt.strftime("%Y-%m-%dT%H:%M:%S.") + f"{dt.microsecond // 1000:03d}Z"
 
 
 def round2(value: float) -> float:

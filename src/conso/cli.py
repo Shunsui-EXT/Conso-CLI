@@ -120,9 +120,18 @@ def register(
     settings = Settings.from_env()
     if dry_run:
         rng = random.Random()
+        verifier = build_verifier(settings)
+        provision_inbox = callable(getattr(verifier, "create_inbox", None))
         for i in range(count):
-            identity = build_identity(settings, rng=rng, index=i)
-            _log(f"[dry-run] {identity.email} :: {identity.consoname} :: {identity.password}")
+            try:
+                identity = build_identity(settings, rng=rng, index=i)
+                _log(f"[dry-run] {identity.email} :: {identity.consoname} :: {identity.password}")
+            except ValueError:
+                if provision_inbox:
+                    _log(f"[dry-run] verifier={type(verifier).__name__} will provision inbox at runtime")
+                    break
+                _log("dry-run: set EMAIL_DOMAIN or use VERIFIER=temptf/mailtm (self-provisioning)")
+                break
         return
 
     store = Store(settings.data_dir)
@@ -158,7 +167,7 @@ def farm(
                 prompt_text=spec.prompt_text, response_text=spec.response_text,
                 has_non_image_attachment=spec.has_non_image_attachment,
             )
-            entry = economy.build_entry(account, timestamp=datetime.now(timezone.utc).isoformat())
+            entry = economy.build_entry(account, timestamp=economy.js_isoformat(datetime.now(timezone.utc)))
             _log(f"[dry-run] {spec.platform}/{spec.model} zaps={account.zaps} entry={json.dumps(entry)}")
         return
 

@@ -173,9 +173,81 @@ itself on the allowlist.
 POST /auth/v1/token?grant_type=password  -> 400 {"error_code":"email_not_confirmed"}
 ```
 
-The confirmation link is mailed to the signup address; the verifier adapter
-fetches it. With a temp-mail domain blocked at signup, the verifier must be
-pointed at the inbox of an allowed provider.
+The confirmation is delivered as a **6-digit OTP** (not a link):
+
+```
+From: no-reply@mail.conso.xyz
+Subject: Conso Sign-in Code
+Body: ...Your sign-in code for Conso... <p>614502</p>
+```
+
+Verify with `POST /auth/v1/verify {"type":"email","email":<addr>,"token":<otp>}`
+which returns a session. This is the Supabase email OTP flow, and it works for
+any signup address.
+
+### Working provisioning chain (verified end-to-end)
+
+Using **temp.tf** (real Gmail/Outlook/Hotmail addresses via plus-aliases) and
+the local Turnstile solver:
+
+```
+1. GET  https://temp.tf/api/account?providers=gmail&dot=0&plus=1
+        -> {"email":"alacatarik177+7cj0iatj7j@gmail.com"}
+2. POST http://127.0.0.1:8877/solve   (real_page Turnstile)  -> token
+3. POST /auth/v1/signup  {email,password,gotrue_meta_security:{captcha_token}}
+        -> 200, user created
+4. POST https://temp.tf/api/check {email, wait:true}
+        -> {"data":[{"subject":"Conso Sign-in Code","body":"...614502..."}]}
+5. POST /auth/v1/verify {"type":"email","email","token":"614502"}
+        -> 200, access_token + refresh_token
+6. POST /rest/v1/rpc/create_consouser {"p_google_id": uid}
+        -> 200 {consoname:null, total_zaps:0, referral_code:"CONSO-..."}
+7. POST /rest/v1/rpc/get_my_leaderboard_rank
+        -> 200 (rank)
+```
+
+`analysis/e2e_provision.py` runs steps 1-7.
+
+### Account ban on first turn — ROOT CAUSE FOUND: missing onboarding
+
+A synthetic turn through `append_prompt` bans the account **unless the
+consoname (display name) has been set first**:
+
+```
+create_consouser                      -> 200
+append_prompt (no consoname)          -> 200 "0"     then all calls: account_banned
+----------------------------------------
+create_consouser                      -> 200
+PATCH consousers {consoname}          -> 200         (onboarding)
+append_prompt                         -> 200 "0.07"  (credited, no ban)
+```
+
+The extension's popup completes onboarding (`createConsouser` -> pick a
+consoname -> `ready`) before it ever records a turn; skipping that step trips
+the anti-abuse. Isolated by `analysis/e2e_ban_probe.py` (no consoname -> ban)
+and `analysis/e2e_consoname_probe.py` (consoname -> no ban).
+
+Ruled out: timestamp format (`+00:00` vs JS `.000Z` — fixed, not the cause).
+
+### Verified full pipeline (end-to-end, real zaps)
+
+`analysis/e2e_full.py` runs the complete flow and confirms credited zaps match
+the client-computed values exactly:
+
+```
+account: alacatarik177+0sumpkdu6f@gmail.com
+onboarded: 200
+turn 1 [claude/claude-opus-4-8]      sent=0.07 -> 200 0.07
+turn 2 [chatgpt/gpt-5-6]             sent=0.06 -> 200 0.06
+turn 3 [perplexity/pplx_asi_sonnet]  sent=0.08 -> 200 0.08
+turn 4 [gemini/gemini-3-pro]         sent=0.05 -> 200 0.05
+turn 5 [claude/claude-opus-4-8]      sent=0.07 -> 200 0.07
+rank: 27942 (improved from 28008)
+```
+
+The server does **not** clamp `p_base_zaps` / `p_spend_usd`: the credited value
+equals the client-submitted value to the cent. The client-side accounting is
+authoritative.
 
 ## 5. Turn detection
 

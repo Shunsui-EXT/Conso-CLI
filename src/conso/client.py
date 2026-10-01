@@ -206,6 +206,27 @@ class ConsoClient:
     def create_consouser(self, google_id: str) -> dict[str, Any]:
         return self._rpc("create_consouser", {"p_google_id": google_id})
 
+    def set_consoname(self, consoname: str) -> dict[str, Any]:
+        """Set the display name (extension does a direct table UPDATE).
+
+        Returns the updated row; raises on cooldown/taken.
+        """
+        if not self.session:
+            raise ConsoAPIError("not signed in")
+        url = (
+            f"{self.settings.supabase_url}/rest/v1/consousers"
+            f"?id=eq.{self.session.user_id}"
+        )
+        headers = {**self._supabase_headers(authed=True), "Prefer": "return=representation"}
+        resp = self.transport.request("PATCH", url, headers=headers, json={"consoname": consoname})
+        if resp.status_code >= 400:
+            payload = _safe_json(resp) or {}
+            raise ConsoAPIError(
+                payload.get("message", f"set_consoname failed ({resp.status_code})"),
+                status=resp.status_code, payload=payload,
+            )
+        return _safe_json(resp)
+
     def is_consoname_available(self, consoname: str) -> bool:
         result = self._rpc("is_consoname_available", {"p_consoname": consoname})
         return bool(result)

@@ -17,9 +17,7 @@ already claimed today, so a run skips those first.
 
 from __future__ import annotations
 
-import time
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from typing import Callable
 
 from .client import ConsoAPIError, ConsoClient
@@ -103,8 +101,6 @@ def claim_mission(client: ConsoClient, mission_id: str, *, logger: LogFn | None 
 
 def get_account_row(client: ConsoClient) -> dict:
     """Read the authenticated user's own consousers row."""
-    from .client import Session  # local import to avoid cycle noise
-
     session = client.session
     if session is None:
         return {}

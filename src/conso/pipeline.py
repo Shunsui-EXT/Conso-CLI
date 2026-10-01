@@ -272,6 +272,24 @@ def make_synthetic_turn(rng: random.Random, index: int) -> TurnSpec:
                     has_non_image_attachment=rng.random() < 0.1)
 
 
+def _looks_like_jwt(token: str) -> bool:
+    return token.count(".") == 2 and len(token) > 40
+
+
+def _token_ok(settings: Settings, access_token: str) -> bool:
+    """Probe the token with a cheap authed call."""
+    if not _looks_like_jwt(access_token):
+        return False
+    client = ConsoClient(settings)
+    try:
+        client.session = Session(
+            access_token=access_token, refresh_token="", user_id="", email=None,
+        )
+        return client.get_user() is not None
+    finally:
+        client.close()
+
+
 def farm_turns_for_account(
     settings: Settings,
     record: AccountRecord,
@@ -287,11 +305,20 @@ def farm_turns_for_account(
     credited = 0.0
     try:
         session: Session | None = None
-        if record.refresh_token:
+        # 1) reuse a stored access token if it still works
+        if record.access_token and _token_ok(settings, record.access_token):
+            client.session = Session(
+                access_token=record.access_token, refresh_token=record.refresh_token,
+                user_id=record.user_id, email=record.email,
+            )
+            session = client.session
+        # 2) refresh (Supabase refresh tokens are opaque, not JWTs)
+        if session is None and record.refresh_token:
             try:
                 session = client.refresh(record.refresh_token)
             except ConsoAPIError:
                 session = None
+        # 3) password login (needs Turnstile)
         if session is None and record.password:
             token = solver.solve_turnstile() if solver is not None else None
             session = client.sign_in_password(record.email, record.password, captcha_token=token)

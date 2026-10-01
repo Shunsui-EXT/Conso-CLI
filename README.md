@@ -15,14 +15,19 @@ src/conso/
   economy.py                faithful port of the client-side zap/USD/quality math
   transport.py              curl_cffi fingerprinting + proxy pool with quarantine
   client.py                 Supabase auth + RPC + conso.xyz X-API client
+  captcha.py                pluggable Turnstile solvers (service/capsolver/2captcha/manual)
+  verifiers.py              pluggable email adapters (temptf/mailtm/ncaori/imap/tempmail)
   identity.py               email/password/consoname generation
-  verifiers.py              pluggable email-verification adapters (imap/tempmail)
+  session.py                session manager (cached reuse / refresh+persist / password)
   storage.py                JSON+CSV account store, atomic writes, checkpoints
   concurrency.py            adaptive concurrency engine + jittered pacer
   pipeline.py               registration + turn-farming orchestration
-  cli.py                    typer CLI
+  earnings.py               missions, codes, account-row + summary
+  cli.py                    typer CLI (8 subcommands)
+  config.py                 env/.env settings
 extension_original/         downloaded CRX + unpacked extension
-analysis/                   reverse-engineering report
+analysis/                   RE report, schema, audit, e2e probes
+scripts/                    setup_solver.sh / start_solver.sh
 data/                       accounts.json / accounts.csv / state.json (gitignored)
 ```
 

@@ -23,6 +23,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable
 
 from . import economy
+from . import constants as C
 from .captcha import CaptchaSolver
 from .client import ConsoAPIError, ConsoClient, Session
 from .concurrency import AdaptiveConcurrency, Pacer
@@ -299,6 +300,12 @@ def farm_turns_for_account(
     pacer = Pacer(settings.min_delay_seconds, settings.max_delay_seconds)
     ok = 0
     credited = 0.0
+
+    # Hard clamp to the measured daily cap: past it the server bans, sometimes
+    # without first returning a zero-credit turn.
+    effective_turns = min(turns, C.DAILY_TURN_CAP)
+    if effective_turns < turns:
+        _log(logger, f"farm: {record.email} clamping {turns} -> {effective_turns} (daily cap)")
     try:
         try:
             result = manager.ensure_session(record, solver=solver)
@@ -309,7 +316,7 @@ def farm_turns_for_account(
         _log(logger, f"farm: {record.email} session={result.source}")
 
         rng = random.Random()
-        for i in range(turns):
+        for i in range(effective_turns):
             pacer.wait()
             spec = make_synthetic_turn(rng, i)
             account = economy.account_turn(

@@ -172,7 +172,7 @@ class SolverServiceSolver:
         redirect_uri: str = CONSO_REDIRECT_URIS[0],
         verify_url: str = "",
         verify_payload: dict | None = None,
-        retries: int = 4,
+        retries: int = 8,
     ) -> None:
         self.transport = transport
         self.base_url = base_url.rstrip("/")

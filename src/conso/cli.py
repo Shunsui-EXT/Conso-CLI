@@ -27,6 +27,7 @@ from .earnings import MISSIONS, run_earnings
 from .identity import build_identity
 from .limits import get_daily_status
 from .pipeline import farm_turns_for_account, run_registration
+from .scheduler import DailyLoop, LoopConfig
 from .session import SessionManager
 from .storage import Store
 from .transport import Transport
@@ -369,6 +370,48 @@ def status(
             _log(f"status: {record.email} :: FAILED {exc}")
         finally:
             client.close()
+
+
+@app.command()
+def loop(
+    turns: int = typer.Option(10, help="Turns per account per day (<= daily cap)."),
+    interval_hours: float = typer.Option(24.0, help="Hours between cycles."),
+    cycles: int = typer.Option(0, help="Number of cycles (0 = forever)."),
+    once: bool = typer.Option(False, "--once", help="Run a single cycle now and exit."),
+    force: bool = typer.Option(False, "--force", help="Re-run accounts already done today."),
+    no_missions: bool = typer.Option(False, "--no-missions", help="Skip mission claims."),
+    daily_cap: float = typer.Option(0.0, help="Stop an account at this daily zaps (0 = off)."),
+) -> None:
+    """Run the daily earn cycle (missions + turns) on a schedule."""
+    import signal
+
+    settings = Settings.from_env()
+    store = Store(settings.data_dir)
+    solver = build_solver(Transport(settings))
+    config = LoopConfig(
+        turns=turns,
+        interval_seconds=int(interval_hours * 3600),
+        claim_missions=not no_missions,
+        max_cycles=1 if once else cycles,
+        daily_cap=daily_cap,
+    )
+    runner = DailyLoop(settings, store, config=config, solver=solver, logger=_log)
+
+    def _handle(signum, frame):  # noqa: ANN001, ARG001
+        _log("loop: stop requested, finishing current account...")
+        runner.stop()
+
+    signal.signal(signal.SIGINT, _handle)
+    signal.signal(signal.SIGTERM, _handle)
+
+    _log(f"loop start: turns={turns} interval={interval_hours}h cycles={config.max_cycles or 'inf'} "
+         f"missions={config.claim_missions} cap={daily_cap or '-'}")
+    if once:
+        result = runner.run_cycle(force=force)
+        _log(f"loop done: +{round(result.zaps, 2)} zaps")
+    else:
+        runner.run_forever()
+        _log("loop stopped")
 
 
 def main() -> None:

@@ -93,6 +93,22 @@ All via `.env` (see `.env.example`). Key values:
 - **Open:** rate limits at scale; whether repeated plus-aliases on the same
   underlying mailbox get flagged; per-account daily caps.
 
+## Daily loop
+
+Run the full earn cycle (missions + turns) on a schedule, resumable across
+restarts:
+
+```bash
+python main.py loop --once                 # one cycle now, exit
+python main.py loop --interval-hours 24    # run daily forever (Ctrl-C to stop)
+python main.py loop --turns 10 --daily-cap 25
+python main.py loop --no-missions          # turns only
+```
+
+The loop records each run in `state.json` (`daily_loop.<date>.<email>`) and
+skips accounts already done that day, so overlaps/restarts never double-submit.
+It also stops an account at the first zero-credit turn (the daily cap).
+
 ## Daily limits
 
 `append_prompt` credits only ~**10 turns per account per day**; past that the

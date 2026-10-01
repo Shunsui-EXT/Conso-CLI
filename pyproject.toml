@@ -1,0 +1,28 @@
+[project]
+name = "conso-automation"
+version = "0.1.0"
+description = "Reverse-engineered automation pipeline for the Conso AI Usage Tracker extension."
+requires-python = ">=3.10"
+dependencies = [
+    "tiktoken>=0.7.0",
+    "curl_cffi>=0.7.0",
+    "httpx>=0.27.0",
+    "python-dotenv>=1.0.0",
+    "rich>=13.7.0",
+    "typer>=0.12.0",
+]
+
+[project.scripts]
+conso = "conso.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pyright]
+venvPath = "."
+venv = ".venv"
+extraPaths = ["src"]

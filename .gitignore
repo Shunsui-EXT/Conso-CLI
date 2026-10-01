@@ -1,0 +1,41 @@
+# Environment
+.env
+.env.*
+!.env.example
+
+# Data & secrets
+data/
+logs/
+output/
+*.db
+*.sqlite
+*.sqlite3
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Node
+node_modules/
+dist/
+build/
+*.log
+
+# Original extension dump (large binaries)
+extension_original/*.crx
+extension_original/*.zip
+extension_original/unpacked/**/*.png
+extension_original/unpacked/**/*.jpg
+extension_original/unpacked/**/*.mp4
+extension_original/unpacked/**/*.woff2
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+*.swp

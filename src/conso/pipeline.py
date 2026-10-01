@@ -352,6 +352,14 @@ def farm_turns_for_account(
 
 
 def _extract_credited(result: Any, fallback: float) -> float:
+    """The append_prompt RPC returns the credited zaps directly (a number).
+
+    Older/alternate shapes return an object; handle both.
+    """
+    if isinstance(result, bool):  # bool is an int subclass; not a credit
+        return fallback
+    if isinstance(result, (int, float)):
+        return float(result)
     if isinstance(result, dict):
         for key in ("creditedZaps", "credited_zaps", "zaps"):
             if key in result and isinstance(result[key], (int, float)):

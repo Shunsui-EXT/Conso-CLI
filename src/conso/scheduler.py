@@ -185,6 +185,15 @@ class DailyLoop:
         if not records:
             return result
 
+        _emit("BATCH_STARTED", target=len(records),
+              solver=type(self.solver).__name__ if self.solver else "",
+              referral="")
+        try:
+            return self._run_records(records, force, result)
+        finally:
+            _emit("BATCH_COMPLETED", status="STOPPED" if self._stop.is_set() else "COMPLETED")
+
+    def _run_records(self, records, force: bool, result: CycleResult) -> CycleResult:
         workers = max(1, self.config.parallel_workers)
         if workers == 1 or len(records) == 1:
             for record in records:

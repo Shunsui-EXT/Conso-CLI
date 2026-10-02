@@ -36,11 +36,30 @@ that is not usable for Turnstile.
 
 ## What actually keeps the solver healthy
 
-- **Cooldown** (`SOLVER_SOLVE_DELAY`, e.g. 8s) — the single most effective lever.
+- **Cooldown** (`SOLVER_SOLVE_DELAY`) — the single most effective lever.
+  Verified: with **0s** delay the solver solves the 1st challenge then times out
+  on the 2nd (Cloudflare rate-flags a rapid-solve IP); with **30s** delay, 3/3
+  consecutive solves succeed; with **60s** it is steadier still. Set
+  `SOLVER_SOLVE_DELAY=45` for batch registration.
 - **Restart on flag** — the watchdog does this automatically.
 - **Residential proxies** — datacenter proxies cannot pass Turnstile; only
   residential/mobile exit IPs get a solvable challenge. Without residential
-  proxies, solves must run **direct** (and thus share one IP).
+  proxies, solves must run **direct** (and thus share one IP), which is exactly
+  why the cooldown matters.
+
+## Multi-account registration: what limits throughput
+
+Verified with `register 3 --earn`:
+
+- The solver's solve rate is the bottleneck. At `SOLVER_SOLVE_DELAY=5` only the
+  first account's solve succeeded; the next two timed out. At **30s** the solves
+  are spaced enough to keep working.
+- Each account is pinned to its own proxy for the HTTP calls
+  (`solver=direct, http_proxy=<distinct>`), so signup/create_consouser do not
+  share an IP — this is what spreads the server's `signup_velocity_exceeded`.
+- Practical throughput: **~1 account per cooldown interval** when solving
+  direct. To go faster, either lower the effective solve rate needs residential
+  proxies for the solver, or run multiple solver instances on different IPs.
 
 ## Per-account proxy (the requested behavior)
 

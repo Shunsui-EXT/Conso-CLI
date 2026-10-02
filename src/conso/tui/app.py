@@ -72,25 +72,35 @@ class OverviewView(VerticalScroll):
 
         tiles = list(self.query(Metric))
         pct = (b.done / b.target * 100) if b.target else 0.0
-        vals = [
-            b.status,
-            f"{b.done}/{b.target}" if b.target else "—",
-            str(counts.get("active", 0)),
-            str(b.failed),
-            f"{m['zaps']:.2f}",
-            f"{b.rate:.1f}",
-        ]
+        # Before a run starts, show store-level totals so the view is never blank.
+        active = counts.get("active", 0)
+        zaps = m["zaps"]
+        if b.status == "IDLE":
+            status_txt = "IDLE (press M for menu)"
+            prog_txt = f"{counts.get('total', 0)} accounts"
+            rate_txt = "—"
+        else:
+            status_txt = b.status
+            prog_txt = f"{b.done}/{b.target}" if b.target else "—"
+            rate_txt = f"{b.rate:.1f}"
+        vals = [status_txt, prog_txt, str(active), str(b.failed), f"{zaps:.2f}", rate_txt]
         for tile, v in zip(tiles, vals):
             tile.update_value(v)
 
         bar = self.query_one("#progress", ProgressBar)
         bar.update(total=100, progress=min(100, pct))
 
-        self.query_one("#detail", Static).update(
-            f"[b]solver[/b] {b.solver or '—'}   [b]referral[/b] {b.referral or '—'}   "
-            f"[b]elapsed[/b] {b.elapsed:.0f}s   [b]turns[/b] {m['turns']}   "
-            f"[b]missions[/b] {m['missions']}"
-        )
+        if b.status == "IDLE":
+            self.query_one("#detail", Static).update(
+                "[b]Belum ada run aktif.[/b]  Tekan [b]M[/b] untuk menu "
+                "(Register / Daily task), [b]2[/b] untuk daftar akun, [b]l[/b] untuk log."
+            )
+        else:
+            self.query_one("#detail", Static).update(
+                f"[b]solver[/b] {b.solver or '—'}   [b]referral[/b] {b.referral or '—'}   "
+                f"[b]elapsed[/b] {b.elapsed:.0f}s   [b]turns[/b] {m['turns']}   "
+                f"[b]missions[/b] {m['missions']}"
+            )
         self.query_one("#counts", Static).update(
             f"[b]accounts[/b] {counts.get('total', 0)}  "
             f"[green]active {counts.get('active', 0)}[/green]  "

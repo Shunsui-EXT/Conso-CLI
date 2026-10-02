@@ -344,6 +344,7 @@ def get_default_solver(
     headless: bool | None = None,
     timeout_seconds: int | None = None,
     proxy: str | None = None,
+    max_concurrent: int | None = None,
 ) -> InternalTurnstileSolver:
     """Return the process-wide embedded solver instance."""
     global _default_solver
@@ -353,8 +354,11 @@ def get_default_solver(
                 headless = os.environ.get("SOLVER_HEADLESS", "1") != "0"
             if timeout_seconds is None:
                 timeout_seconds = int(os.environ.get("SOLVER_TIMEOUT", "90"))
+            if max_concurrent is None:
+                max_concurrent = int(os.environ.get("SOLVER_MAX_CONCURRENT", "2") or 2)
             _default_solver = InternalTurnstileSolver(
-                headless=headless, timeout_seconds=timeout_seconds, proxy=proxy
+                headless=headless, timeout_seconds=timeout_seconds,
+                proxy=proxy, max_concurrent=max_concurrent,
             )
         return _default_solver
 

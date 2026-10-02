@@ -419,10 +419,14 @@ class InternalSolverAdapter:
         self._headless = headless
         self._timeout = timeout
         self._real_page = real_page
+        self._max_concurrent = int(os.environ.get("SOLVER_MAX_CONCURRENT", "2") or 2)
 
     def solve_turnstile(self, *, sitekey: str = TURNSTILE_SITEKEY,
                         page_url: str = TURNSTILE_PAGE_URL, timeout: float = 120.0) -> str:
-        solver = self._get(headless=self._headless, timeout_seconds=int(timeout))
+        solver = self._get(
+            headless=self._headless, timeout_seconds=int(timeout),
+            max_concurrent=self._max_concurrent,
+        )
         # The Conso verify-human page needs a whitelisted redirect_uri to render.
         if "redirect_uri=" not in page_url:
             sep = "&" if "?" in page_url else "?"

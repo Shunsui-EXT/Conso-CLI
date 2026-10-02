@@ -546,6 +546,43 @@ def proxies(
 
 
 @app.command()
+def pipeline(
+    register: int = typer.Option(0, "--register", help="Accounts to provision (0 = skip)."),
+    earn: bool = typer.Option(True, "--earn/--no-earn", help="Earn for new accounts."),
+    loop: bool = typer.Option(False, "--loop", help="Run the recurring daily loop after."),
+    turns: int = typer.Option(10, help="Turns per account per earn pass."),
+    interval_hours: float = typer.Option(24.0, help="Daily-loop interval (hours)."),
+    cycles: int = typer.Option(0, help="Daily-loop cycles (0 = forever)."),
+    referral: str = typer.Option("", help="Referral code (default from .env)."),
+    workers: int = typer.Option(1, help="Farm parallelism."),
+    daily_cap: float = typer.Option(0.0, help="Stop an account at this daily zaps."),
+) -> None:
+    """Full pipeline: register -> earn -> daily loop (one entry point)."""
+    import signal
+
+    from .orchestrator import Orchestrator, PipelineConfig
+
+    settings = Settings.from_env()
+    config = PipelineConfig(
+        register_count=register, earn=earn, turns=turns, loop=loop,
+        interval_hours=interval_hours, loop_cycles=cycles, referral=referral,
+        workers=workers, daily_cap=daily_cap,
+    )
+    orch = Orchestrator(settings, config=config, logger=_log)
+
+    def _handle(signum, frame):  # noqa: ANN001, ARG001
+        _log("pipeline: stop requested")
+        orch.stop()
+
+    signal.signal(signal.SIGINT, _handle)
+    signal.signal(signal.SIGTERM, _handle)
+
+    _log(f"pipeline start: register={register} earn={earn} loop={loop} turns={turns}")
+    summary = orch.run()
+    _log(f"pipeline done: {summary}")
+
+
+@app.command()
 def dashboard() -> None:
     """Launch the TUI control center (live register/farm monitoring)."""
     from .tui.app import run as run_tui

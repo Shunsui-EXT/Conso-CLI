@@ -46,15 +46,10 @@ class PipelineResult:
 
 
 def _log(default: LogFn | None, message: str) -> None:
+    # The logger callback is the single funnel for log output; the TUI passes a
+    # callback that also emits to the event bus, so no bus emit happens here.
     if default:
         default(message)
-    # Mirror to the TUI event bus (no-op when no dashboard is attached).
-    try:
-        from .tui.events import EventType, get_event_bus
-
-        get_event_bus().emit(EventType.LOG, message=message)
-    except Exception:
-        pass
 
 
 def _emit(event_type_name: str, **data: Any) -> None:

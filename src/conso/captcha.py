@@ -404,10 +404,40 @@ class CapsolverApiSolver:
         raise TimeoutError("capsolver turnstile solve timed out")
 
 
+class InternalSolverAdapter:
+    """Turnstile solver running Camoufox in-process (no sidecar).
+
+    Wraps `internal_solver.InternalTurnstileSolver` behind the CaptchaSolver
+    protocol. Solves on the real verify-human page (Conso rejects stub tokens).
+    """
+
+    def __init__(self, *, headless: bool = True, timeout: float = 120.0,
+                 real_page: bool = True) -> None:
+        from .internal_solver import get_default_solver
+
+        self._get = get_default_solver
+        self._headless = headless
+        self._timeout = timeout
+        self._real_page = real_page
+
+    def solve_turnstile(self, *, sitekey: str = TURNSTILE_SITEKEY,
+                        page_url: str = TURNSTILE_PAGE_URL, timeout: float = 120.0) -> str:
+        solver = self._get(headless=self._headless, timeout_seconds=int(timeout))
+        # The Conso verify-human page needs a whitelisted redirect_uri to render.
+        if "redirect_uri=" not in page_url:
+            sep = "&" if "?" in page_url else "?"
+            from urllib.parse import quote
+            page_url = f"{page_url}{sep}redirect_uri={quote(CONSO_REDIRECT_URIS[0], safe='')}"
+        return solver.solve(
+            page_url, sitekey, timeout_seconds=int(timeout), real_page=self._real_page,
+        )
+
+
 def build_solver(transport: Transport) -> CaptchaSolver:
     """Factory driven by env.
 
     CAPTCHA_PROVIDER:
+      internal   -> in-process Camoufox (no sidecar, no browser service)
       none       -> NoopSolver (needs CAPTCHA_TOKEN for auth steps)
       capsolver  -> Capsolver managed API      (BROWSER-FREE, pure HTTP)
       2captcha   -> 2Captcha managed API       (BROWSER-FREE, pure HTTP)
@@ -415,6 +445,10 @@ def build_solver(transport: Transport) -> CaptchaSolver:
       service    -> self-hosted captcha-solver sidecar (uses a local browser)
     """
     provider = os.environ.get("CAPTCHA_PROVIDER", "none").strip().lower()
+    if provider == "internal":
+        return InternalSolverAdapter(
+            headless=os.environ.get("SOLVER_HEADLESS", "1") != "0",
+        )
     if provider == "service":
         verify_url = os.environ.get("CAPTCHA_VERIFY_URL", "").strip()
         verify_payload = None

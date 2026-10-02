@@ -89,7 +89,7 @@ class OverviewView(VerticalScroll):
             eta = f"   [dim]ETA {(b.target - b.done) / b.rate:.1f} min[/dim]"
         self.query_one("#statusline", Static).update(
             f"[b green]● RUNNING[/b green]  {b.done}/{b.target} done  "
-            f"{b.failed} failed  {b.elapsed:.0f}s{eta}"
+            f"{b.failed} failed  {b.elapsed:.0f}s{eta}   [dim]x = stop[/dim]"
         )
         tiles = list(self.query(Metric))
         for tile, v in zip(tiles, [
@@ -283,6 +283,7 @@ class MenuScreen(ModalScreen[RunOptions | None]):
                 yield Button("Register", id="btn-reg", variant="primary")
                 yield Button("Daily task", id="btn-daily", variant="success")
                 yield Button("Monitor", id="btn-monitor")
+                yield Button("Stop", id="btn-stop", variant="error")
 
     def _opts(self, kind: str) -> RunOptions:
         def _int(id_: str, default: int) -> int:
@@ -303,6 +304,9 @@ class MenuScreen(ModalScreen[RunOptions | None]):
         )
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "btn-stop":
+            self.dismiss(RunOptions(kind="stop"))
+            return
         kind = {"btn-reg": "register", "btn-daily": "daily", "btn-monitor": "monitor"}[event.button.id]
         self.dismiss(RunOptions(kind="monitor") if kind == "monitor" else self._opts(kind))
 
@@ -337,6 +341,7 @@ class ConsoTUI(App):
         Binding("l", "show('logs')", "Logs", priority=True),
         Binding("m", "menu", "Menu", priority=True),
         Binding("p", "poll_stats", "Refresh stats", priority=True),
+        Binding("x", "stop", "Stop run", priority=True),
         Binding("q", "quit", "Quit", priority=True),
     ]
 
@@ -349,6 +354,7 @@ class ConsoTUI(App):
 
     def on_mount(self) -> None:
         self._active = "overview"
+        self._runner = None
         self._apply_visibility()
         # seed the table with existing accounts
         try:
@@ -397,6 +403,8 @@ class ConsoTUI(App):
                 self._run_register(result)
             elif result.kind == "daily":
                 self._run_daily(result)
+            elif result.kind == "stop":
+                self.action_stop()
 
         self.push_screen(MenuScreen(), _handle)
 
@@ -411,9 +419,14 @@ class ConsoTUI(App):
             workers=opts.workers, only_new=opts.only_new,
             solver_concurrent=opts.solver_concurrent, referral=opts.referral,
         )
+        orch = Orchestrator(settings, config=cfg, logger=self._log_to_bus)
+        self._runner = orch
 
         def work() -> None:
-            Orchestrator(settings, config=cfg, logger=self._log_to_bus).run()
+            try:
+                orch.run()
+            finally:
+                self._runner = None
 
         threading.Thread(target=work, daemon=True).start()
         self.action_show("overview")
@@ -427,19 +440,34 @@ class ConsoTUI(App):
         from ..verifiers import build_verifier
 
         settings = Settings.from_env()
+        runner = DailyLoop(
+            settings, Store(settings.data_dir),
+            config=LoopConfig(turns=opts.turns, parallel_workers=opts.workers, max_cycles=1),
+            solver=build_solver(Transport(settings)),
+            verifier=build_verifier(settings), logger=self._log_to_bus,
+        )
+        self._runner = runner
 
         def work() -> None:
-            store = Store(settings.data_dir)
-            runner = DailyLoop(
-                settings, store,
-                config=LoopConfig(turns=opts.turns, parallel_workers=opts.workers, max_cycles=1),
-                solver=build_solver(Transport(settings)),
-                verifier=build_verifier(settings), logger=self._log_to_bus,
-            )
-            runner.run_cycle()
+            try:
+                runner.run_cycle()
+            finally:
+                self._runner = None
 
         threading.Thread(target=work, daemon=True).start()
         self.action_show("overview")
+
+    def action_stop(self) -> None:
+        """Signal the active run to stop gracefully."""
+        runner = getattr(self, "_runner", None)
+        if runner is None:
+            self._log_to_bus("tui: no active run to stop")
+            return
+        try:
+            runner.stop()
+            self._log_to_bus("tui: stop requested — finishing current account")
+        except Exception as exc:  # noqa: BLE001
+            self._log_to_bus(f"tui: stop failed: {exc}")
 
     def _log_to_bus(self, message: str) -> None:
         from .events import EventType, get_event_bus

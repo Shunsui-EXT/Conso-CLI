@@ -49,6 +49,7 @@ class LoopConfig:
     claim_missions: bool = True
     max_cycles: int = 0                 # 0 = run forever
     daily_cap: float = 0.0              # 0 = no cap
+    parallel_workers: int = 1           # accounts farmed concurrently
 
 
 @dataclass
@@ -149,21 +150,46 @@ class DailyLoop:
     def run_cycle(self, *, force: bool = False) -> CycleResult:
         day = _today_utc()
         result = CycleResult(day=day)
-        for record in self.store.all():
-            if self._stop.is_set():
-                break
-            if record.status not in ("active", "farmed"):
-                continue
-            if self.only_email and record.email != self.only_email:
-                continue
-            try:
-                info = self.run_account(record, force=force)
-            except Exception as exc:  # noqa: BLE001
-                info = {"status": "failed", "reason": f"{type(exc).__name__}: {exc}"[:160]}
-            result.per_account[record.email] = info
-            _log(self.logger, f"loop: {record.email} -> {info.get('status')} "
-                              f"{info.get('reason', '')} +{info.get('zaps', 0)} zaps")
+        records = [
+            r for r in self.store.all()
+            if r.status in ("active", "farmed")
+            and (not self.only_email or r.email == self.only_email)
+        ]
+        if not records:
+            return result
+
+        workers = max(1, self.config.parallel_workers)
+        if workers == 1 or len(records) == 1:
+            for record in records:
+                if self._stop.is_set():
+                    break
+                result.per_account[record.email] = self._run_one(record, force)
+            return result
+
+        # Parallel farm/earn across accounts. This is HTTP-only (no solve), so a
+        # worker pool genuinely scales — unlike registration, which serializes
+        # on the solver lock.
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = {pool.submit(self._run_one, r, force): r for r in records}
+            for future in as_completed(futures):
+                record = futures[future]
+                try:
+                    info = future.result()
+                except Exception as exc:  # noqa: BLE001
+                    info = {"status": "failed", "reason": f"{type(exc).__name__}: {exc}"[:160]}
+                result.per_account[record.email] = info
         return result
+
+    def _run_one(self, record: AccountRecord, force: bool) -> dict:
+        try:
+            info = self.run_account(record, force=force)
+        except Exception as exc:  # noqa: BLE001
+            info = {"status": "failed", "reason": f"{type(exc).__name__}: {exc}"[:160]}
+        _log(self.logger, f"loop: {record.email} -> {info.get('status')} "
+                          f"{info.get('reason', '')} +{info.get('zaps', 0)} zaps")
+        return info
 
     def run_forever(self) -> None:
         cycles = 0

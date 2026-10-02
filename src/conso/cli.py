@@ -402,6 +402,7 @@ def loop(
     no_missions: bool = typer.Option(False, "--no-missions", help="Skip mission claims."),
     daily_cap: float = typer.Option(0.0, help="Stop an account at this daily zaps (0 = off)."),
     email: str = typer.Option("", help="Only run this account (empty = all)."),
+    workers: int = typer.Option(1, help="Farm this many accounts concurrently (HTTP-only)."),
 ) -> None:
     """Run the daily earn cycle (missions + turns) on a schedule."""
     import signal
@@ -415,6 +416,7 @@ def loop(
         claim_missions=not no_missions,
         max_cycles=1 if once else cycles,
         daily_cap=daily_cap,
+        parallel_workers=workers,
     )
     runner = DailyLoop(settings, store, config=config, solver=solver,
                        verifier=build_verifier(settings), logger=_log)

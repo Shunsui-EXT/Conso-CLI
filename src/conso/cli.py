@@ -443,6 +443,42 @@ def recover(
             _log(f"recover: {record.email} :: FAILED {exc}")
 
 
+@app.command()
+def doctor() -> None:
+    """Report whether the pipeline is browser-free and what each layer uses."""
+    import importlib.util as _ilu
+
+    settings = Settings.from_env()
+    provider = __import__("os").environ.get("CAPTCHA_PROVIDER", "none").strip().lower()
+    browser_free_providers = {"capsolver", "2captcha", "manual", "none"}
+    browser_libs = ["playwright", "cloakbrowser", "selenium", "pyppeteer", "nodriver"]
+
+    _log("doctor: dependency check")
+    for lib in browser_libs:
+        present = _ilu.find_spec(lib) is not None
+        _log(f"  {lib:14} {'present' if present else 'absent'}")
+
+    # src/ must not import any browser lib
+    import pathlib
+
+    src = pathlib.Path(__file__).parent
+    hits: list[str] = []
+    for py in src.glob("*.py"):
+        text = py.read_text(encoding="utf-8", errors="ignore")
+        for lib in browser_libs:
+            if f"import {lib}" in text or f"from {lib}" in text:
+                hits.append(f"{py.name}:{lib}")
+    _log(f"  core src/ browser imports: {hits or 'NONE (browser-free)'}")
+
+    _log(f"doctor: CAPTCHA_PROVIDER={provider} "
+         f"browser_free={provider in browser_free_providers}")
+    if provider == "service":
+        _log("  note: 'service' runs a local CloakBrowser sidecar — NOT browser-free")
+        _log("  switch to CAPTCHA_PROVIDER=capsolver (or 2captcha) for full HTTP")
+    _log(f"doctor: transport=curl_cffi impersonate={settings.impersonate} "
+         f"proxy={'yes' if settings.proxy.urls else 'no'}")
+
+
 def main() -> None:
     try:
         app()

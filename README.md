@@ -163,6 +163,42 @@ Order matters: the extension shows the referral screen right after
 the code before onboarding (`create_consouser -> redeem_referral_code ->
 set_consoname`). Per-run override: `python main.py register 5 --referral CODE`.
 
+## Browser-free mode
+
+The core pipeline (`src/conso/`) is **already pure HTTP** — no Playwright,
+CloakBrowser, Selenium, or any browser. Every layer talks HTTP directly:
+
+| Layer | Mechanism |
+|---|---|
+| Transport | `curl_cffi` (TLS/JA3 fingerprint impersonation) |
+| Auth | Supabase GoTrue REST |
+| Data | PostgREST RPC |
+| Email | temp.tf / mail.tm HTTP API |
+| Captcha | Capsolver / 2Captcha **managed API** (pure HTTP) |
+
+The only browser anywhere is the optional `service` captcha sidecar
+(`vendor/captcha-solver`, CloakBrowser). To run **fully browser-free**, point
+the captcha layer at a managed API instead:
+
+```bash
+# .env
+CAPTCHA_PROVIDER=capsolver        # or 2captcha
+CAPSOLVER_API_KEY=...             # from capsolver.com
+```
+
+Verify:
+
+```bash
+python main.py doctor
+```
+
+`doctor` reports which browser libs are present, confirms `src/` imports none,
+and flags whether the configured captcha provider is browser-free.
+
+> Trade-off: the `service` sidecar is free but runs a local browser and can hit
+> Cloudflare rate-flags. A managed API is browser-free and IP-agnostic but
+> costs per solve. Everything else is identical.
+
 ## Session recovery (reuse the signup address)
 
 **Yes — the temp.tf address can be reused later for OTP.** Verified live: an

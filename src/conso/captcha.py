@@ -234,11 +234,71 @@ def _safe_json(resp: Any) -> Any:
         return None
 
 
+class CapsolverApiSolver:
+    """Capsolver's own managed API (AntiTurnstileTaskProxyLess) — pure HTTP.
+
+    Unlike the `service` sidecar, this runs no local browser: the request and
+    response are plain HTTPS calls to Capsolver. This is the browser-free path
+    for the Turnstile gate. The sitekey/URL are the Conso verify-human values,
+    so the returned token is accepted by Supabase.
+    """
+
+    BASE = "https://api.capsolver.com"
+
+    def __init__(self, api_key: str, transport: Transport, *, sitekey: str = TURNSTILE_SITEKEY,
+                 page_url: str = TURNSTILE_PAGE_URL, proxy: str = "") -> None:
+        self.api_key = api_key
+        self.transport = transport
+        self.sitekey = sitekey
+        self.page_url = page_url
+        self.proxy = proxy
+
+    def solve_turnstile(self, *, sitekey: str = TURNSTILE_SITEKEY,
+                        page_url: str = TURNSTILE_PAGE_URL, timeout: float = 120.0) -> str:
+        task: dict[str, Any] = {
+            "type": "AntiTurnstileTaskProxyLess",
+            "websiteURL": page_url,
+            "websiteKey": sitekey,
+        }
+        if self.proxy:
+            task["type"] = "AntiTurnstileTask"
+            task["proxy"] = self.proxy
+        created = self.transport.request(
+            "POST", f"{self.BASE}/createTask",
+            json={"clientKey": self.api_key, "task": task}, retries=1,
+        ).json()
+        if created.get("errorId"):
+            raise RuntimeError(f"capsolver createTask: {created.get('errorDescription')}")
+        task_id = created.get("taskId")
+        if not task_id:
+            raise RuntimeError(f"capsolver createTask: no taskId ({created})")
+
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            time.sleep(3)
+            result = self.transport.request(
+                "POST", f"{self.BASE}/getTaskResult",
+                json={"clientKey": self.api_key, "taskId": task_id}, retries=1,
+            ).json()
+            if result.get("errorId"):
+                raise RuntimeError(f"capsolver getTaskResult: {result.get('errorDescription')}")
+            if result.get("status") == "ready":
+                token = (result.get("solution") or {}).get("token")
+                if not token:
+                    raise RuntimeError("capsolver returned no token")
+                return token
+        raise TimeoutError("capsolver turnstile solve timed out")
+
+
 def build_solver(transport: Transport) -> CaptchaSolver:
     """Factory driven by env.
 
-    CAPTCHA_PROVIDER = none | capsolver | 2captcha | manual | service
-      service  -> local/self-hosted sidecar (SOLVER_URL, SOLVER_TOKEN)
+    CAPTCHA_PROVIDER:
+      none       -> NoopSolver (needs CAPTCHA_TOKEN for auth steps)
+      capsolver  -> Capsolver managed API      (BROWSER-FREE, pure HTTP)
+      2captcha   -> 2Captcha managed API       (BROWSER-FREE, pure HTTP)
+      manual     -> operator pastes a token
+      service    -> self-hosted captcha-solver sidecar (uses a local browser)
     """
     provider = os.environ.get("CAPTCHA_PROVIDER", "none").strip().lower()
     if provider == "service":
@@ -259,7 +319,13 @@ def build_solver(transport: Transport) -> CaptchaSolver:
             verify_payload=verify_payload,
         )
     if provider == "capsolver":
-        return CapSolverSolver(os.environ.get("CAPSOLVER_API_KEY", ""), transport)
+        key = os.environ.get("CAPSOLVER_API_KEY", "")
+        if os.environ.get("CAPSOLVER_MODE", "api") == "sdk":
+            return CapSolverSolver(key, transport)
+        return CapsolverApiSolver(
+            key, transport,
+            proxy=os.environ.get("CAPSOLVER_PROXY", ""),
+        )
     if provider == "2captcha":
         return TwoCaptchaSolver(os.environ.get("TWOCAPTCHA_API_KEY", ""), transport)
     if provider == "manual":

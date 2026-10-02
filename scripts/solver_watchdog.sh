@@ -13,8 +13,15 @@ mkdir -p "$ROOT/logs"
 fails=0
 
 start_solver() {
-    pkill -9 -f "captcha-solver/server.py" 2>/dev/null
+    # Kill by port holder + xvfb wrapper. Matching on the cmdline is unsafe:
+    # the process runs as bare `python3 server.py`, so a
+    # "captcha-solver/server.py" pattern never matches and the stale process
+    # keeps the port (all "restarts" silently no-op).
+    local holder
+    holder=$(ss -ltnp 2>/dev/null | grep ":8877" | grep -oP 'pid=\K[0-9]+' | head -1)
+    [ -n "$holder" ] && kill -9 "$holder" 2>/dev/null
     pkill -9 -f "xvfb-run.*server.py" 2>/dev/null
+    pkill -9 -f "python3 server.py" 2>/dev/null
     sleep 2
     # shellcheck disable=SC1091
     source "$ROOT/.venv/bin/activate"

@@ -129,12 +129,13 @@ class Transport:
         data: Any = None,
         retries: int | None = None,
         timeout: float | None = None,
+        no_proxy: bool = False,
     ) -> cffi_requests.Response:
         attempts = (retries if retries is not None else self.settings.max_retries) + 1
         effective_timeout = timeout if timeout is not None else self.settings.request_timeout
         last_exc: Exception | None = None
         for attempt in range(attempts):
-            proxies = self._proxies()
+            proxies = None if no_proxy else self._proxies()
             try:
                 resp = self._session.request(
                     method,

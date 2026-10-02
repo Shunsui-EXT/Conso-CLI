@@ -310,9 +310,12 @@ class SolverServiceSolver:
             body["url"] = page_url
         if proxy:
             body["proxy"] = proxy
+        # The sidecar is a LOCAL service (127.0.0.1). Never route the /solve
+        # call itself through the HTTP proxy pool — the sidecar rejects proxied
+        # requests ("403 ... you are not allowed to use the proxy"). Direct only.
         resp = self.transport.request(
             "POST", f"{self.base_url}/solve", headers=self._headers(), json=body,
-            retries=0, timeout=timeout + 30,
+            retries=0, timeout=timeout + 30, no_proxy=True,
         )
         if resp.status_code != 200:
             return "", f"http {resp.status_code}: {resp.text[:120]}"

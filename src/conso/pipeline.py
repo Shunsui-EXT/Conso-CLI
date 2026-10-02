@@ -114,13 +114,13 @@ def register_account(
     client = ConsoClient(settings, transport=Transport(settings, pin_proxy=proxy or None))
     try:
         # Conso enforces Turnstile on signup + login; solve once and reuse.
+        # The solver runs DIRECT (no proxy): the pool is datacenter and cannot
+        # pass Turnstile. Only the HTTP calls (signup/OTP/RPC) use the account
+        # proxy.
         captcha_token: str | None = None
         if solver is not None:
-            # Solve from the same proxy the signup will use, when possible.
-            if proxy and hasattr(solver, "pin_account_proxy"):
-                solver.pin_account_proxy(proxy)
             captcha_token = solver.solve_turnstile()
-            _log(logger, f"register: {identity.email} captcha solved (proxy={proxy or 'direct'})")
+            _log(logger, f"register: {identity.email} captcha solved (solver=direct, http_proxy={proxy or 'direct'})")
 
         _log(logger, f"register: {identity.email} -> supabase signup")
         signup = client.sign_up_email(identity.email, identity.password, captcha_token=captcha_token)

@@ -545,6 +545,14 @@ def proxies(
     transport.close()
 
 
+@app.command()
+def dashboard() -> None:
+    """Launch the TUI control center (live register/farm monitoring)."""
+    from .tui.app import run as run_tui
+
+    run_tui()
+
+
 def main() -> None:
     try:
         app()

@@ -48,6 +48,23 @@ class PipelineResult:
 def _log(default: LogFn | None, message: str) -> None:
     if default:
         default(message)
+    # Mirror to the TUI event bus (no-op when no dashboard is attached).
+    try:
+        from .tui.events import EventType, get_event_bus
+
+        get_event_bus().emit(EventType.LOG, message=message)
+    except Exception:
+        pass
+
+
+def _emit(event_type_name: str, **data: Any) -> None:
+    """Best-effort TUI event emit; never breaks the pipeline."""
+    try:
+        from .tui.events import EventType, get_event_bus
+
+        get_event_bus().emit(EventType[event_type_name], **data)
+    except Exception:
+        pass
 
 
 def _wait_for_code(verifier: EmailVerifier, address: str, *, timeout: float) -> str | None:
@@ -119,9 +136,11 @@ def register_account(
         # proxy.
         captcha_token: str | None = None
         if solver is not None:
+            _emit("ACCOUNT_STAGE", email=identity.email, stage="captcha")
             captcha_token = solver.solve_turnstile()
             _log(logger, f"register: {identity.email} captcha solved (solver=direct, http_proxy={proxy or 'direct'})")
 
+        _emit("ACCOUNT_STAGE", email=identity.email, stage="signup")
         _log(logger, f"register: {identity.email} -> supabase signup")
         signup = client.sign_up_email(identity.email, identity.password, captcha_token=captcha_token)
 
@@ -129,6 +148,7 @@ def register_account(
         # verifier and exchange it for a session.
         session = None
         if verifier is not None:
+            _emit("ACCOUNT_STAGE", email=identity.email, stage="otp")
             code = _wait_for_code(verifier, identity.email, timeout=120.0)
             if code:
                 _log(logger, f"register: {identity.email} got code {code}")
@@ -149,18 +169,21 @@ def register_account(
         # This MUST succeed: without the row the account cannot farm. A failure
         # here (e.g. signup_velocity_exceeded) is a failed registration, not an
         # active one.
+        _emit("ACCOUNT_STAGE", email=identity.email, stage="create")
         try:
             client.create_consouser(session.user_id)
         except ConsoAPIError as exc:
             record.status = "failed"
             record.note = f"create_consouser: {str(exc)[:160]}"
             _log(logger, f"register: {identity.email} create_consouser failed: {exc}")
+            _emit("ACCOUNT_FAILED", email=identity.email, reason=record.note)
             return record
 
         # Redeem the referral BEFORE onboarding: the extension shows the
         # referral screen (redeem referral/access code) right after
         # createConsouser and before picking a consoname.
         if referral_code:
+            _emit("ACCOUNT_STAGE", email=identity.email, stage="referral")
             try:
                 client.redeem_referral_code(referral_code)
                 _log(logger, f"register: {identity.email} referral={referral_code}")
@@ -170,6 +193,7 @@ def register_account(
         # Complete onboarding: set the display name, matching the extension flow
         # (createConsouser -> referral -> pick consoname -> ready) before any turn.
         if identity.consoname:
+            _emit("ACCOUNT_STAGE", email=identity.email, stage="consoname")
             try:
                 client.set_consoname(identity.consoname)
                 _log(logger, f"register: {identity.email} consoname={identity.consoname}")
@@ -178,6 +202,7 @@ def register_account(
 
         record.status = "active"
         record.note = "registered"
+        _emit("ACCOUNT_COMPLETED", email=identity.email, proxy=proxy)
         return record
     except ConsoAPIError as exc:
         record.status = "failed"
@@ -186,6 +211,7 @@ def register_account(
     except Exception as exc:  # noqa: BLE001 - surface any transport failure
         record.status = "failed"
         record.note = f"{type(exc).__name__}: {exc}"[:200]
+        _emit("ACCOUNT_FAILED", email=record.email, reason=record.note)
         return record
     finally:
         client.close()
@@ -202,6 +228,8 @@ def run_registration(
     logger: LogFn | None = None,
 ) -> list[PipelineResult]:
     store = store or Store(settings.data_dir)
+    _emit("BATCH_STARTED", target=count, solver=type(solver).__name__ if solver else "",
+          referral=referral_code)
     engine = AdaptiveConcurrency(initial=settings.concurrency, maximum=settings.max_concurrency)
     pacer = Pacer(settings.min_delay_seconds, settings.max_delay_seconds)
     results: list[PipelineResult] = []
@@ -253,6 +281,7 @@ def run_registration(
                 break
             store.save_state({"register_done": done})
 
+    _emit("BATCH_COMPLETED", status="COMPLETED")
     return results
 
 
@@ -359,6 +388,7 @@ def farm_turns_for_account(
                 turn_credited = float(_extract_credited(result, account.zaps))
                 credited += turn_credited
                 _log(logger, f"farm: {record.email} {spec.platform}/{spec.model} +{account.zaps} zaps")
+                _emit("TURN_CREDITED", email=record.email, zaps=turn_credited)
 
                 # Soft abuse flag: the server credits 0 instead of banning. This
                 # appears at the daily turn cap (~10/account); continuing after it

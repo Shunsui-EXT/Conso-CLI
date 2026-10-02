@@ -312,10 +312,10 @@ class MetricsView(Vertical):
         else:
             chart = ["  [dim](no data yet — start a run)[/dim]"]
         stats = (
-            f"[b]current[/b] {ts['rate']:.1f}/min  ·  [b]avg[/b] {ts['avg']:.1f}/min  ·  "
-            f"[b]peak[/b] {ts['peak']:.1f}/min\n"
-            f"[b]turns[/b] {ts['turns']}  ·  [b]failed[/b] {ts['fails']}  ·  "
-            f"[b]success[/b] [green]{ts['success_rate']:.1f}%[/green]"
+            f"[b]current [/b]{ts['rate']:.1f}/min  ·  [b]avg [/b]{ts['avg']:.1f}/min  ·  "
+            f"[b]peak [/b]{ts['peak']:.1f}/min\n"
+            f"[b]turns [/b]{ts['turns']}  ·  [b]failed [/b]{ts['fails']}  ·  "
+            f"[b]success [/b][green]{ts['success_rate']:.1f}%[/green]"
         )
         self.query_one("#met-body", Static).update(
             "\n".join(chart) + "\n\n" + stats
@@ -339,10 +339,10 @@ class AlertsView(Vertical):
                 f"[green]✓ all clear[/green] — {ok} accounts earning normally"
             )
             return
-        icon = {"ban": "[red]⛔[/red]", "err": "[yellow]✗[/yellow]", "cap": "[dim]⏸[/dim]"}
+        icon = {"ban": "[red]BAN [/red]", "err": "[yellow]ERR [/yellow]", "cap": "[dim]CAP [/dim]"}
         lines = [f"[b]NEEDS ATTENTION[/b] [red]({len(alerts)})[/red]", ""]
         for level, email, reason in alerts[:20]:
-            lines.append(f" {icon.get(level, '·')}  {mask_email(email):30}  [dim]{reason}[/dim]")
+            lines.append(f" {icon.get(level, '[dim]··· [/dim]')}{mask_email(email):32} [dim]{reason}[/dim]")
         if len(alerts) > 20:
             lines.append(f" [dim]… +{len(alerts) - 20} more[/dim]")
         lines.append("")

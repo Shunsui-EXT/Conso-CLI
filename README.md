@@ -135,20 +135,29 @@ per-account table, and a live log stream.
 
 ![Running — live monitor](docs/img/tui-running.png)
 
+![Pipeline](docs/img/tui-pipeline.png)
+
+![Metrics](docs/img/tui-metrics.png)
+
+![Alerts](docs/img/tui-alerts.png)
+
 ![Accounts](docs/img/tui-accounts.png)
 
-**Overview is adaptive:**
+**Views:**
 
-- **Idle** — portfolio health: store zaps, account counts, average daily
-  (cap utilization bar vs 21), average boost/streak, banned count, top-5
-  accounts, and a top-zaps sparkline.
-- **Running** — live monitor: status + ETA, run zaps / done / turns / rate /
-  failed / missions, a progress bar, a **zaps/min sparkline**, a per-platform
-  breakdown, and a per-run error summary.
-
-**Accounts** — `ST · EMAIL · STAGE · TOTAL · TODAY · STREAK · BOOST · PROXY ·
-NOTE`, with a filter box; failures and running accounts sort first; server
-stats refresh every 30s (or press `p`).
+- **Overview** (adaptive) — **Idle**: portfolio health (store zaps, account
+  counts, avg daily cap bar, avg boost/streak, banned, top-5, sparkline).
+  **Running**: live monitor (status + ETA, run zaps/done/turns/rate/failed,
+  progress bar, zaps/min sparkline, platform breakdown, error summary).
+- **Accounts** — `ST · EMAIL · STAGE · TOTAL · TODAY · STREAK · BOOST · PROXY ·
+  NOTE`, filterable; failures/running first; server stats refresh every 30s.
+- **Pipeline** — Kanban of accounts by stage (queued → captcha → signup → otp →
+  create → referral → onboarding → missions → earning → done / failed), so
+  bottlenecks are visible at a glance.
+- **Metrics** — zaps/min bar chart + current/avg/peak, turns/failed/success rate.
+- **Alerts** — triage list of accounts needing attention (banned / failed /
+  capped) with an "N earning normally" summary.
+- **Logs** — realtime event stream.
 
 ### Menu
 
@@ -174,6 +183,9 @@ CONSO FARM — pilih aksi
 |---|---|
 | `1` | Overview (idle/running) |
 | `2` | Accounts |
+| `3` | Pipeline (Kanban) |
+| `4` | Metrics (time-series) |
+| `5` | Alerts (triage) |
 | `l` | Logs |
 | `m` | Menu (Register / Daily / Monitor / Stop) |
 | `p` | Refresh server stats |

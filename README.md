@@ -122,6 +122,46 @@ data/                         accounts.json / accounts.csv / state.json (gitigno
 | `export` | Dump the account store (`--fmt csv\|json`) |
 | `verify` | Health-check the proxy pool |
 
+## TUI dashboard
+
+```bash
+python main.py dashboard
+```
+
+Opens a Textual control center. On start it shows a **menu**; pick an action:
+
+```
+CONSO FARM — pilih aksi
+  R = Register ulang (akun baru)   D = Daily task (earn)   M = Monitor
+
+  Jumlah akun (register):  [8]
+  Turns per akun:          [10]
+  Farm workers (paralel):  [2]
+  Solver concurrent (0=env): [0]
+  Only-new (earn akun baru saja)? 1=ya / 0=semua: [0]
+
+  [ Register ]   [ Daily task ]   [ Monitor ]
+```
+
+- **Register** — provisions N new accounts, then earns for them (background
+  thread; Overview updates live).
+- **Daily task** — runs the earn cycle (missions + turns) for existing accounts.
+- **Monitor** — just watch, no run started.
+
+**Keys:**
+
+| Key | View |
+|---|---|
+| `1` | Overview — status, progress, active/failed, zaps, rate |
+| `2` | Accounts — table (email masked, stage, zaps, proxy) |
+| `l` | Logs — realtime event stream |
+| `m` | Menu (start another run) |
+| `q` | Quit |
+
+The TUI and the CLI share one event bus: a `python main.py pipeline ...` run in
+another terminal emits the same events, so you can watch a headless run live.
+Requires the `textual` dependency (in `requirements.txt`).
+
 ## Configuration
 
 All via `.env` (see [`.env.example`](.env.example)).

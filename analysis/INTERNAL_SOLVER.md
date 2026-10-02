@@ -49,9 +49,24 @@ compatibility** issue with the current page, not a config error.
 
 ## Conclusion
 
-The internal Camoufox solver is **installed and functional at the browser
-level** (launch + navigation verified), but Camoufox (Firefox) does not render
-this specific page's Turnstile widget. The Chromium-based path (the existing
-CloakBrowser sidecar) is the one that historically produced accepted tokens;
-keep using it. Revisit Camoufox if the page's CSP/rendering changes, or run
-Camoufox with a patched CSP if that becomes necessary.
+The internal Camoufox solver works: stub page + explicit `turnstile.render()`
+from the api.js onload callback produces a token Conso accepts.
+
+### Throughput tuning (SOLVER_MAX_CONCURRENT)
+
+Measured with `register N --earn`, per-account proxy:
+
+| SOLVER_MAX_CONCURRENT | batch | result | wall |
+|---|---|---|---|
+| 1 | 3 | 3/3 | 48s |
+| 2 | 3 | 3/3 | 38s |
+| 4 | 5 | 5/5 | 64s |
+| **8** | **8** | **8/8** | **88s** |
+| 16 | 10 | 9/10 (Page.goto timeout) | ~235s |
+
+**Sweet spot: 8.** At 16 concurrent solves the single Camoufox browser
+overloads (page navigation times out) and one solve fails, plus the run is
+slower overall. Default is `SOLVER_MAX_CONCURRENT=8`.
+
+Each account is pinned to its own proxy for the HTTP calls, so signups do not
+share an IP — this is what keeps `signup_velocity_exceeded` away across a batch.

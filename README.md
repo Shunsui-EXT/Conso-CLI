@@ -132,29 +132,40 @@ Opens a Textual control center. On start it shows a **menu**; pick an action:
 
 ```
 CONSO FARM — pilih aksi
-  R = Register ulang (akun baru)   D = Daily task (earn)   M = Monitor
+  Register = akun baru + earn · Daily = earn akun lama · Monitor = lihat saja
 
   Jumlah akun (register):  [8]
   Turns per akun:          [10]
   Farm workers (paralel):  [2]
   Solver concurrent (0=env): [0]
+  Referral code (kosong = dari .env): [ ]
   Only-new (earn akun baru saja)? 1=ya / 0=semua: [0]
 
   [ Register ]   [ Daily task ]   [ Monitor ]
 ```
 
 - **Register** — provisions N new accounts, then earns for them (background
-  thread; Overview updates live).
+  thread; Overview updates live). Set a **referral code** here per run, or leave
+  it blank to use `DEFAULT_REFERRAL_CODE` from `.env`.
 - **Daily task** — runs the earn cycle (missions + turns) for existing accounts.
 - **Monitor** — just watch, no run started.
+
+**Views:**
+
+- **Overview** — status, a progress bar, per-status account counts
+  (active/running/failed/pending), zaps, rate/min, and the active
+  solver/referral.
+- **Accounts** — filterable table (type to filter by email/status); failures and
+  running accounts are shown first.
+- **Logs** — realtime event stream.
 
 **Keys:**
 
 | Key | View |
 |---|---|
-| `1` | Overview — status, progress, active/failed, zaps, rate |
-| `2` | Accounts — table (email masked, stage, zaps, proxy) |
-| `l` | Logs — realtime event stream |
+| `1` | Overview |
+| `2` | Accounts |
+| `l` | Logs |
 | `m` | Menu (start another run) |
 | `q` | Quit |
 

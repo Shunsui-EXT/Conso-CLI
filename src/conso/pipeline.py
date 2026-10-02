@@ -18,6 +18,7 @@ from __future__ import annotations
 import itertools
 import random
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -170,16 +171,30 @@ def register_account(
         record.expires_at = session.expires_at or jwt_expiry(session.access_token)
 
         # Create the Conso user row (extension passes the OAuth subject id).
-        # This MUST succeed: without the row the account cannot farm. A failure
-        # here (e.g. signup_velocity_exceeded) is a failed registration, not an
-        # active one.
+        # This MUST succeed: without the row the account cannot farm. On a
+        # transient rejection (signup_velocity_exceeded, rate_limited) retry with
+        # backoff before giving up — the auth account already exists, so a retry
+        # later just completes provisioning.
         _emit("ACCOUNT_STAGE", email=identity.email, stage="create")
-        try:
-            client.create_consouser(session.user_id)
-        except ConsoAPIError as exc:
+        row_ok = False
+        last_err = ""
+        for attempt in range(1, 4):
+            try:
+                client.create_consouser(session.user_id)
+                row_ok = True
+                break
+            except ConsoAPIError as exc:
+                last_err = str(exc)
+                if "velocity" in last_err.lower() or "rate_limit" in last_err.lower():
+                    _log(logger, f"register: {identity.email} create_consouser transient ({last_err[:60]}), "
+                                 f"retry {attempt}/3")
+                    time.sleep(5 * attempt)
+                    continue
+                break
+        if not row_ok:
             record.status = "failed"
-            record.note = f"create_consouser: {str(exc)[:160]}"
-            _log(logger, f"register: {identity.email} create_consouser failed: {exc}")
+            record.note = f"create_consouser: {last_err[:160]}"
+            _log(logger, f"register: {identity.email} create_consouser failed: {last_err}")
             _emit("ACCOUNT_FAILED", email=identity.email, reason=record.note)
             return record
 

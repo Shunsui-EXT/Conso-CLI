@@ -84,13 +84,18 @@ class OverviewView(VerticalScroll):
     def _render_running(self, st, b) -> None:
         m = st.metrics()
         counts = st.account_counts()
+        SEP = "[dim]  ·  [/dim]"   # space kept INSIDE the tag (trailing space
+        #                            after [/tag] is stripped by Textual markup)
         eta = ""
         if b.rate > 0 and b.target > b.done:
-            eta = f"   [dim]ETA {(b.target - b.done) / b.rate:.1f} min[/dim]"
-        self.query_one("#statusline", Static).update(
-            f"[b green]● RUNNING[/b green]  {b.done}/{b.target} done  "
-            f"{b.failed} failed  {b.elapsed:.0f}s{eta}   [dim]x = stop[/dim]"
-        )
+            eta = f"ETA {(b.target - b.done) / b.rate:.1f} min"
+        bits = [f"[b green]● RUNNING[/b green]", f"{b.done}/{b.target} done",
+                f"{b.failed} failed", f"{b.elapsed:.0f}s"]
+        if eta:
+            bits.append(eta)
+        bits.append("[dim]x = stop[/dim]")
+        self.query_one("#statusline", Static).update(SEP.join(bits))
+
         tiles = list(self.query(Metric))
         for tile, v in zip(tiles, [
             f"{st.run_zaps:.2f}", f"{b.done}/{b.target}",
@@ -101,38 +106,42 @@ class OverviewView(VerticalScroll):
         pct = (b.done / b.target * 100) if b.target else 0.0
         self.query_one("#progress", ProgressBar).update(total=100, progress=min(100, pct))
 
+        spark = sparkline(st.zaps_history, 44) or "·" * 20
         self.query_one("#spark", Static).update(
-            f"[b]zaps/min[/b] {sparkline(st.zaps_history, 44)}  [dim](avg {b.rate:.1f})[/dim]"
+            f"[b]zaps/min[/b]  [green]{spark}[/green]  [dim](avg {b.rate:.1f})[/dim]"
         )
-        self.query_one("#detail", Static).update(
-            f"[b]solver[/b] {b.solver or '—'}   [b]referral[/b] {b.referral or '—'}   "
-            f"[b]elapsed[/b] {b.elapsed:.0f}s   [b]run zaps[/b] {st.run_zaps:.2f}"
-        )
+        self.query_one("#detail", Static).update(SEP.join([
+            f"[b]solver [/b][cyan]{b.solver or '—'}[/cyan]",
+            f"[b]referral [/b][cyan]{b.referral or '—'}[/cyan]",
+            f"[b]elapsed [/b]{b.elapsed:.0f}s",
+            f"[b]run zaps [/b][magenta]{st.run_zaps:.2f}[/magenta]",
+        ]))
         if st.platform_zaps:
-            parts = [f"[b]{p}[/b] {z:.1f}[dim]({st.platform_turns.get(p, 0)}t)[/dim]"
+            parts = [f"[b]{p} [/b]{z:.1f} [dim]({st.platform_turns.get(p, 0)}t)[/dim]"
                      for p, z in sorted(st.platform_zaps.items(), key=lambda x: -x[1])]
-            self.query_one("#platforms", Static).update("[b]platforms[/b] " + "  ".join(parts))
+            self.query_one("#platforms", Static).update("[b]platforms [/b]" + SEP.join(parts))
         else:
-            self.query_one("#platforms", Static).update("[b]platforms[/b] —")
-        self.query_one("#counts", Static).update(
-            f"[b]accounts[/b] {counts.get('total', 0)}  "
-            f"[green]active {counts.get('active', 0)}[/green]  "
-            f"[yellow]running {counts.get('running', 0)}[/yellow]  "
-            f"[red]failed {counts.get('failed', 0)}[/red]"
-        )
+            self.query_one("#platforms", Static).update("[b]platforms [/b][dim]—[/dim]")
+        self.query_one("#counts", Static).update(SEP.join([
+            f"[b]accounts [/b]{counts.get('total', 0)}",
+            f"[green]active {counts.get('active', 0)}[/green]",
+            f"[yellow]running {counts.get('running', 0)}[/yellow]",
+            f"[red]failed {counts.get('failed', 0)}[/red]",
+        ]))
         if st.failed_reasons:
-            reasons = "  ".join(f"{k} [red]×{v}[/red]" for k, v in
-                                sorted(st.failed_reasons.items(), key=lambda x: -x[1])[:4])
-            self.query_one("#top", Static).update(f"[b red]errors[/b red] {reasons}")
+            reasons = SEP.join(f"{k} [red]×{v}[/red]" for k, v in
+                               sorted(st.failed_reasons.items(), key=lambda x: -x[1])[:4])
+            self.query_one("#top", Static).update(f"[b red]errors [/b red]" + reasons)
         else:
             self.query_one("#top", Static).update("")
 
     # -- IDLE: portfolio health --------------------------------------------
     def _render_idle(self, st, _b) -> None:
+        SEP = "[dim]  ·  [/dim]"
         p = st.portfolio()
         self.query_one("#statusline", Static).update(
-            "[b]○ IDLE[/b]   tekan [b]M[/b] untuk menu (Register / Daily task)   ·   "
-            "[b]p[/b] refresh stats server"
+            f"[b]○ IDLE [/b]{SEP}tekan [b]M [/b]untuk menu (Register / Daily task) "
+            f"{SEP}[b]p [/b]refresh stats server"
         )
         tiles = list(self.query(Metric))
         for tile, v in zip(tiles, [
@@ -146,26 +155,28 @@ class OverviewView(VerticalScroll):
         self.query_one("#progress", ProgressBar).update(total=100, progress=cap_pct)
 
         tops = [a.total_zaps for a in p["top"]]
+        med = (sorted(tops)[len(tops) // 2] if tops else 0)
         self.query_one("#spark", Static).update(
-            f"[b]top zaps[/b] {sparkline(tops, 44)}  "
-            f"[dim](top {tops[0]:.0f} · med {(sorted(tops)[len(tops)//2] if tops else 0):.0f})[/dim]"
+            f"[b]top zaps[/b]  [green]{sparkline(tops, 44)}[/green]  "
+            f"[dim](top {tops[0]:.0f} · med {med:.0f})[/dim]"
+            if tops else "[b]top zaps[/b]  [dim]—[/dim]"
         )
-        self.query_one("#detail", Static).update(
-            f"[b]avg daily[/b] {p['avg_daily']:.1f}/21 ({cap_pct:.0f}%)   "
-            f"[b]avg boost[/b] {p['avg_boost']:.2f}   "
-            f"[b]banned[/b] [red]{p['banned']}[/red]"
-        )
+        self.query_one("#detail", Static).update(SEP.join([
+            f"[b]avg daily [/b]{p['avg_daily']:.1f}/21 ({cap_pct:.0f}%)",
+            f"[b]avg boost [/b]{p['avg_boost']:.2f}",
+            f"[b]banned [/b][red]{p['banned']}[/red]",
+        ]))
         self.query_one("#platforms", Static).update("")
 
         counts = st.account_counts()
-        self.query_one("#counts", Static).update(
-            f"[b]accounts[/b] {counts.get('total', 0)}  "
-            f"[green]active {counts.get('active', 0)}[/green]  "
-            f"[red]failed {counts.get('failed', 0)}[/red]  "
-            f"[dim]pending {counts.get('pending', 0)}[/dim]"
-        )
+        self.query_one("#counts", Static).update(SEP.join([
+            f"[b]accounts [/b]{counts.get('total', 0)}",
+            f"[green]active {counts.get('active', 0)}[/green]",
+            f"[red]failed {counts.get('failed', 0)}[/red]",
+            f"[dim]pending {counts.get('pending', 0)}[/dim]",
+        ]))
         if p["top"] and p["top"][0].total_zaps > 0:
-            lines = [f"  {i+1}. {mask_email(a.email)}  [b]{a.total_zaps:.1f}[/b] zaps "
+            lines = [f"  {i+1}. {mask_email(a.email)}  [b]{a.total_zaps:.1f} [/b]zaps "
                      f"[dim](today {a.daily_zaps:.1f}, streak {a.streak})[/dim]"
                      for i, a in enumerate(p["top"])]
             self.query_one("#top", Static).update("[b]top accounts[/b]\n" + "\n".join(lines))

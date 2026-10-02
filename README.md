@@ -179,10 +179,18 @@ python main.py proxies --limit 20    # test the first 20
 ```
 
 `SolverServiceSolver` round-robins the list and sends `proxy` in each `/solve`
-body. If a solve fails with a proxy-looking error (407 / tunnel / expired), it
-retries that attempt **directly** (no proxy), so a dead pool never blocks a
-solve. Lines are stripped of CRLF — a trailing `\r` makes the proxy URL
-malformed and every request fails with `CONNECT tunnel failed`.
+body. **Any** proxy attempt that fails (no token, timeout, 500, socket drop)
+falls back to a **direct** solve for that attempt, so a proxy that cannot pass
+the Turnstile challenge never blocks the pipeline. Lines are stripped of CRLF —
+a trailing `\r` makes the proxy URL malformed and every request fails with
+`CONNECT tunnel failed`.
+
+> Datacenter proxies often **cannot pass Turnstile**: Cloudflare serves a harder
+> challenge to hosting IPs (the checkbox is clicked but no token is issued, or
+> the socket drops with `net::ERR_SOCKET_NOT_CONNECTED`). Verified: a fresh
+> solver solves directly in ~10s but times out through all tested proxies. The
+> direct fallback keeps solves working; use **residential** proxies if you need
+> the solve itself to run on a proxy IP.
 
 ## Browser-free mode
 

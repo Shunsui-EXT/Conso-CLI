@@ -215,57 +215,49 @@ class SolverServiceSolver:
     def solve_turnstile(self, *, sitekey: str = TURNSTILE_SITEKEY,
                         page_url: str = TURNSTILE_PAGE_URL, timeout: float = 120.0) -> str:
         last_error = ""
-        for attempt in range(1, self.retries + 1):
-            body: dict[str, Any] = {"type": "turnstile", "sitekey": sitekey, "timeout_s": int(timeout)}
-            if self.verify_url and self.verify_payload:
-                # Solve + verify in one shot (recommended for Supabase).
-                body["url"] = self._page_url(page_url)
-                body["verify_url"] = self.verify_url
-                body["verify_payload"] = self.verify_payload
-            elif self.real_page:
-                body["real_page"] = True
-                body["url"] = self._page_url(page_url)
-            else:
-                body["url"] = page_url
-            # Rotate through the proxy pool (per-request on the sidecar). After
-            # exhausting the pool once, fall back to a direct solve.
+        for _attempt in range(1, self.retries + 1):
             proxy = self._next_proxy()
-            if proxy:
-                body["proxy"] = proxy
-            resp = self.transport.request(
-                "POST", f"{self.base_url}/solve", headers=self._headers(), json=body,
-                retries=0, timeout=timeout + 30,
-            )
-            if resp.status_code != 200:
-                last_error = f"http {resp.status_code}: {resp.text[:120]}"
-                continue
-            data = _safe_json(resp) or {}
-            token = data.get("token")
+            token, err = self._solve_once(sitekey, page_url, timeout, proxy)
             if token:
                 return token
-            last_error = data.get("error", "no token")
-            # A proxy-related failure should not poison the whole solve: retry
-            # without a proxy so a dead/expired pool still yields a token.
-            if proxy and _proxy_failure(last_error):
-                direct = dict(body)
-                direct.pop("proxy", None)
-                dresp = self.transport.request(
-                    "POST", f"{self.base_url}/solve", headers=self._headers(), json=direct,
-                    retries=0, timeout=timeout + 30,
-                )
-                ddata = _safe_json(dresp) or {}
-                if ddata.get("token"):
-                    return ddata["token"]
+            last_error = err
+            # A proxy attempt that fails for ANY reason falls back to a direct
+            # solve: datacenter proxies routinely break the Turnstile challenge
+            # (harder challenge on hosting IPs) or drop the socket entirely
+            # (net::ERR_SOCKET_NOT_CONNECTED), never returning a token.
+            if proxy:
+                token, err = self._solve_once(sitekey, page_url, timeout, "")
+                if token:
+                    return token
+                last_error = err
         raise RuntimeError(f"turnstile solve failed after {self.retries} attempts: {last_error}")
 
-
-def _proxy_failure(error: str) -> bool:
-    """True if a solve error looks proxy-related (dead/expired/auth)."""
-    text = (error or "").lower()
-    return any(marker in text for marker in (
-        "proxy", "407", "tunnel", "err_proxy", "net::err", "econnrefused",
-        "authentication", "expired",
-    ))
+    def _solve_once(self, sitekey: str, page_url: str, timeout: float,
+                    proxy: str) -> tuple[str, str]:
+        """One /solve call. Returns (token, error) — token '' on failure."""
+        body: dict[str, Any] = {"type": "turnstile", "sitekey": sitekey, "timeout_s": int(timeout)}
+        if self.verify_url and self.verify_payload:
+            body["url"] = self._page_url(page_url)
+            body["verify_url"] = self.verify_url
+            body["verify_payload"] = self.verify_payload
+        elif self.real_page:
+            body["real_page"] = True
+            body["url"] = self._page_url(page_url)
+        else:
+            body["url"] = page_url
+        if proxy:
+            body["proxy"] = proxy
+        resp = self.transport.request(
+            "POST", f"{self.base_url}/solve", headers=self._headers(), json=body,
+            retries=0, timeout=timeout + 30,
+        )
+        if resp.status_code != 200:
+            return "", f"http {resp.status_code}: {resp.text[:120]}"
+        data = _safe_json(resp) or {}
+        token = data.get("token")
+        if token:
+            return token, ""
+        return "", data.get("error", "no token")
 
 
 def _load_proxies(path: str) -> list[str]:

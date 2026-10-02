@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 from .events import Event, EventType, get_event_bus
@@ -143,6 +143,29 @@ class AppState:
                 "missions": self.missions_ok,
                 "accounts": len(self.accounts),
             }
+
+    def load_store(self, store) -> None:
+        """Seed the account table from the on-disk store (existing accounts)."""
+        with self._lock:
+            for rec in store.all():
+                if rec.email and rec.email not in self.accounts:
+                    self.accounts[rec.email] = AccountRow(
+                        email=rec.email,
+                        status=rec.status if rec.status in ("active", "failed") else "pending",
+                        stage="idle",
+                        zaps=float(rec.total_zaps or 0),
+                        proxy=rec.proxy or "",
+                        note=rec.note or "",
+                    )
+            self.total_zaps = sum(a.zaps for a in self.accounts.values())
+
+    def account_counts(self) -> dict[str, int]:
+        with self._lock:
+            counts = {"active": 0, "failed": 0, "running": 0, "pending": 0}
+            for a in self.accounts.values():
+                counts[a.status] = counts.get(a.status, 0) + 1
+            counts["total"] = len(self.accounts)
+            return counts
 
 
 _state: AppState | None = None

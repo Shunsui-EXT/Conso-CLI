@@ -53,54 +53,80 @@ class Metric(Static):
 class OverviewView(VerticalScroll):
     def compose(self) -> ComposeResult:
         yield Static("CONSO FARM — Mission Control", id="title")
+        yield Static(id="statusline")
         with Horizontal(id="metrics"):
-            yield Metric("STATUS", "yellow")
-            yield Metric("PROGRESS")
-            yield Metric("ACTIVE", "green")
+            yield Metric("RUN ZAPS", "magenta")
+            yield Metric("ACCOUNTS", "green")
+            yield Metric("TURNS", "cyan")
+            yield Metric("MISSIONS", "yellow")
             yield Metric("FAILED", "red")
-            yield Metric("ZAPS", "magenta")
             yield Metric("RATE/min", "cyan")
         yield ProgressBar(total=100, show_eta=False, id="progress")
         yield Static(id="detail")
+        yield Static(id="platforms")
         yield Static(id="counts")
+        yield Static(id="top")
 
     def refresh_view(self) -> None:
         st = get_app_state()
         b = st.snapshot_batch()
         m = st.metrics()
         counts = st.account_counts()
+        rows = st.snapshot_accounts()
 
-        tiles = list(self.query(Metric))
-        pct = (b.done / b.target * 100) if b.target else 0.0
-        # Before a run starts, show store-level totals so the view is never blank.
-        active = counts.get("active", 0)
-        zaps = m["zaps"]
-        if b.status == "IDLE":
-            status_txt = "IDLE (press M for menu)"
-            prog_txt = f"{counts.get('total', 0)} accounts"
-            rate_txt = "—"
+        running = b.status == "RUNNING"
+        # -- status line ---------------------------------------------------
+        if running:
+            eta = ""
+            if b.rate > 0 and b.target > b.done:
+                eta = f"   ETA {(b.target - b.done) / b.rate:.1f} min"
+            status_txt = (f"[b green]● RUNNING[/b green]  {b.done}/{b.target} done  "
+                          f"{b.failed} failed  {b.elapsed:.0f}s{eta}")
+        elif b.status in ("COMPLETED", "STOPPED"):
+            status_txt = (f"[b yellow]■ {b.status}[/b yellow]  {b.done}/{b.target} done  "
+                          f"{b.failed} failed  {b.elapsed:.0f}s")
         else:
-            status_txt = b.status
-            prog_txt = f"{b.done}/{b.target}" if b.target else "—"
-            rate_txt = f"{b.rate:.1f}"
-        vals = [status_txt, prog_txt, str(active), str(b.failed), f"{zaps:.2f}", rate_txt]
+            status_txt = ("[b]○ IDLE[/b]  tekan [b]M[/b] untuk menu "
+                          "(Register / Daily task)")
+        self.query_one("#statusline", Static).update(status_txt)
+
+        # -- metric tiles --------------------------------------------------
+        tiles = list(self.query(Metric))
+        vals = [
+            f"{st.run_zaps:.2f}",
+            f"{counts.get('active', 0)}",
+            f"{m['turns']}",
+            f"{m['missions']}",
+            f"{b.failed}",
+            f"{b.rate:.1f}" if running else "—",
+        ]
         for tile, v in zip(tiles, vals):
             tile.update_value(v)
 
-        bar = self.query_one("#progress", ProgressBar)
-        bar.update(total=100, progress=min(100, pct))
+        pct = (b.done / b.target * 100) if b.target else 0.0
+        self.query_one("#progress", ProgressBar).update(total=100, progress=min(100, pct))
 
-        if b.status == "IDLE":
-            self.query_one("#detail", Static).update(
-                "[b]Belum ada run aktif.[/b]  Tekan [b]M[/b] untuk menu "
-                "(Register / Daily task), [b]2[/b] untuk daftar akun, [b]l[/b] untuk log."
-            )
+        # -- detail line ---------------------------------------------------
+        banned = sum(1 for a in rows if a.banned)
+        active_total = sum(a.total_zaps for a in rows)
+        avg_boost = (sum(a.boost for a in rows) / len(rows)) if rows else 1.0
+        self.query_one("#detail", Static).update(
+            f"[b]solver[/b] {b.solver or '—'}   [b]referral[/b] {b.referral or '—'}   "
+            f"[b]elapsed[/b] {b.elapsed:.0f}s   "
+            f"[b]store total[/b] {active_total:.1f} zaps   "
+            f"[b]avg boost[/b] {avg_boost:.2f}   "
+            f"[b red]banned[/b red] {banned}"
+        )
+
+        # -- platform breakdown (this run) ---------------------------------
+        if st.platform_zaps:
+            parts = [f"[b]{p}[/b] {z:.1f}({st.platform_turns.get(p,0)}t)"
+                     for p, z in sorted(st.platform_zaps.items(), key=lambda x: -x[1])]
+            self.query_one("#platforms", Static).update("[b]platforms[/b] " + "  ".join(parts))
         else:
-            self.query_one("#detail", Static).update(
-                f"[b]solver[/b] {b.solver or '—'}   [b]referral[/b] {b.referral or '—'}   "
-                f"[b]elapsed[/b] {b.elapsed:.0f}s   [b]turns[/b] {m['turns']}   "
-                f"[b]missions[/b] {m['missions']}"
-            )
+            self.query_one("#platforms", Static).update("[b]platforms[/b] —")
+
+        # -- counts --------------------------------------------------------
         self.query_one("#counts", Static).update(
             f"[b]accounts[/b] {counts.get('total', 0)}  "
             f"[green]active {counts.get('active', 0)}[/green]  "
@@ -108,6 +134,20 @@ class OverviewView(VerticalScroll):
             f"[red]failed {counts.get('failed', 0)}[/red]  "
             f"[dim]pending {counts.get('pending', 0)}[/dim]"
         )
+
+        # -- top accounts by server total ----------------------------------
+        top = sorted(rows, key=lambda a: a.total_zaps, reverse=True)[:5]
+        if top and top[0].total_zaps > 0:
+            lines = [f"  {i+1}. {mask_email(a.email)}  {a.total_zaps:.1f} zaps "
+                     f"(today {a.daily_zaps:.1f}, streak {a.streak})"
+                     for i, a in enumerate(top)]
+            self.query_one("#top", Static).update("[b]top accounts[/b]\n" + "\n".join(lines))
+        elif st.failed_reasons:
+            reasons = "  ".join(f"{k}×{v}" for k, v in
+                                sorted(st.failed_reasons.items(), key=lambda x: -x[1])[:4])
+            self.query_one("#top", Static).update(f"[b red]failures[/b red] {reasons}")
+        else:
+            self.query_one("#top", Static).update("")
 
 
 class AccountsView(Vertical):
@@ -248,12 +288,15 @@ class ConsoTUI(App):
 
     CSS = """
     Screen { background: #0d1117; color: #e6edf3; }
-    #title { padding: 1 2; text-style: bold; color: #58a6ff; }
+    #title { padding: 1 2 0 2; text-style: bold; color: #58a6ff; }
+    #statusline { padding: 0 2 1 2; }
     #metrics { height: 5; padding: 0 1; }
     Metric { border: round #30363d; width: 1fr; height: 4; padding: 0 1; margin: 0 1; }
     #progress { margin: 1 2; }
-    #detail { padding: 1 2; color: #8b949e; }
-    #counts { padding: 0 2 1 2; }
+    #detail { padding: 0 2; color: #8b949e; }
+    #platforms { padding: 1 2 0 2; color: #c9d1d9; }
+    #counts { padding: 0 2; }
+    #top { padding: 1 2; color: #8b949e; }
     AccountsView, LogsView { height: 1fr; }
     #acct-title, #log-title { padding: 0 2; color: #58a6ff; text-style: bold; }
     #acct-filter { margin: 0 2 1 2; }

@@ -72,6 +72,10 @@ class AppState:
         self.total_zaps: float = 0.0
         self.turns_ok: int = 0
         self.missions_ok: int = 0
+        self.run_zaps: float = 0.0            # zaps earned this run
+        self.platform_zaps: dict[str, float] = {}   # platform -> zaps this run
+        self.platform_turns: dict[str, int] = {}    # platform -> turns this run
+        self.failed_reasons: dict[str, int] = {}    # reason -> count
         self._bus = get_event_bus()
         self._bus.subscribe_all(self._on_event)
 
@@ -87,6 +91,10 @@ class AppState:
                     solver=d.get("solver", ""),
                     referral=d.get("referral", ""),
                 )
+                self.run_zaps = 0.0
+                self.platform_zaps = {}
+                self.platform_turns = {}
+                self.failed_reasons = {}
             elif event.type == EventType.BATCH_COMPLETED:
                 self.batch.status = d.get("status", "COMPLETED")
             elif event.type == EventType.BATCH_STOPPED:
@@ -118,11 +126,20 @@ class AppState:
                 email = d.get("email", "")
                 row = self.accounts.setdefault(email, AccountRow(email=email))
                 row.status = "failed"
-                row.note = d.get("reason", "")[:80]
+                reason = d.get("reason", "")[:80]
+                row.note = reason
                 self.batch.failed += 1
+                key = reason.split(":")[0][:30] or "unknown"
+                self.failed_reasons[key] = self.failed_reasons.get(key, 0) + 1
             elif event.type == EventType.TURN_CREDITED:
                 self.turns_ok += 1
-                self.total_zaps += float(d.get("zaps", 0) or 0)
+                z = float(d.get("zaps", 0) or 0)
+                self.total_zaps += z
+                self.run_zaps += z
+                plat = d.get("platform", "")
+                if plat:
+                    self.platform_zaps[plat] = self.platform_zaps.get(plat, 0.0) + z
+                    self.platform_turns[plat] = self.platform_turns.get(plat, 0) + 1
             elif event.type == EventType.MISSION_CLAIMED:
                 self.missions_ok += 1
                 self.total_zaps += float(d.get("zaps", 0) or 0)

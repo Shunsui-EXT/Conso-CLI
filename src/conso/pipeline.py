@@ -437,7 +437,7 @@ def farm_turns_for_account(
                 credited += turn_credited
                 _log(logger, f"farm: {record.email} {spec.platform}/{spec.model} "
                              f"sent={account.zaps} credited={turn_credited}")
-                _emit("TURN_CREDITED", email=record.email, zaps=turn_credited)
+                _emit("TURN_CREDITED", email=record.email, zaps=turn_credited, platform=spec.platform)
 
                 if turn_credited <= 0:
                     _log(logger, f"farm: {record.email} credited={turn_credited} — soft flag, stopping")

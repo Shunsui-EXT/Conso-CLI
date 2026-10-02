@@ -586,6 +586,84 @@ def pipeline(
 
 
 @app.command()
+def report(
+    fmt: str = typer.Option("table", help="table|json|csv"),
+    refresh: bool = typer.Option(False, "--refresh", help="Poll server stats first."),
+) -> None:
+    """One-shot status report (headless; for cron/logs/piping)."""
+    from .earnings import get_account_row
+    from .session import SessionManager
+
+    settings = Settings.from_env()
+    store = Store(settings.data_dir)
+    records = store.all()
+    if not records:
+        _log("report: no accounts")
+        raise typer.Exit(code=1)
+
+    rows: list[dict] = []
+    if refresh:
+        manager = SessionManager(settings, store)
+        for record in records:
+            client = ConsoClient(settings)
+            try:
+                client.session = manager.ensure_session(record).session
+                row = get_account_row(client) or {}
+                rows.append({
+                    "status": "banned" if row.get("is_banned") else record.status,
+                    "email": record.email,
+                    "total_zaps": float(row.get("total_zaps") or 0),
+                    "today": float(row.get("daily_zaps_earned") or 0),
+                    "streak": int(row.get("current_streak") or 0),
+                    "boost": float(row.get("boost_factor") or 1.0),
+                    "proxy": (record.proxy.split("@")[-1] if record.proxy else ""),
+                })
+            except Exception:  # noqa: BLE001
+                rows.append({"status": record.status, "email": record.email,
+                             "total_zaps": float(record.total_zaps or 0), "today": 0.0,
+                             "streak": 0, "boost": 1.0, "proxy": ""})
+            finally:
+                client.close()
+    else:
+        for record in records:
+            rows.append({"status": record.status, "email": record.email,
+                         "total_zaps": float(record.total_zaps or 0), "today": 0.0,
+                         "streak": 0, "boost": 1.0, "proxy": record.proxy or ""})
+
+    active = sum(1 for r in rows if r["status"] == "active")
+    banned = sum(1 for r in rows if r["status"] == "banned")
+    failed = sum(1 for r in rows if r["status"] == "failed")
+    total = sum(r["total_zaps"] for r in rows)
+
+    if fmt == "json":
+        typer.echo(json.dumps({
+            "summary": {"accounts": len(rows), "active": active, "failed": failed,
+                        "banned": banned, "total_zaps": round(total, 2)},
+            "accounts": rows,
+        }, indent=2, ensure_ascii=False))
+    elif fmt == "csv":
+        import csv as _csv
+        import io
+
+        buf = io.StringIO()
+        writer = _csv.DictWriter(buf, fieldnames=["status", "email", "total_zaps",
+                                                  "today", "streak", "boost", "proxy"])
+        writer.writeheader()
+        writer.writerows(rows)
+        typer.echo(buf.getvalue().strip())
+    else:
+        typer.echo(f"{'STATUS':8} {'ACCOUNT':38} {'TOTAL':>7} {'TODAY':>6} "
+                   f"{'STREAK':>6} {'BOOST':>6}")
+        typer.echo("-" * 78)
+        for r in sorted(rows, key=lambda x: x["total_zaps"], reverse=True):
+            typer.echo(f"{r['status']:8} {r['email'][:38]:38} {r['total_zaps']:7.1f} "
+                       f"{r['today']:6.1f} {r['streak']:6} {r['boost']:6.2f}")
+        typer.echo("-" * 78)
+        typer.echo(f"accounts {len(rows)}  active {active}  failed {failed}  "
+                   f"banned {banned}  total {total:.1f} zaps")
+
+
+@app.command()
 def dashboard() -> None:
     """Launch the TUI control center (live register/farm monitoring)."""
     from .tui.app import run as run_tui

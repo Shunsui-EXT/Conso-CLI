@@ -208,6 +208,57 @@ class AppState:
         with self._lock:
             return list(self.accounts.values())
 
+    def pipeline_stages(self) -> dict[str, list[str]]:
+        """Group running/active accounts by pipeline stage (Kanban)."""
+        stages = ["queued", "captcha", "signup", "otp", "create", "referral",
+                  "consoname", "missions", "farm", "done", "failed"]
+        out: dict[str, list[str]] = {s: [] for s in stages}
+        with self._lock:
+            rows = list(self.accounts.values())
+        for a in rows:
+            if a.status == "failed":
+                out["failed"].append(a.email)
+            elif a.status == "running":
+                out[a.stage if a.stage in out else "queued"].append(a.email)
+            elif a.stage == "done" or (a.status == "active" and a.stage == "idle"):
+                out["done"].append(a.email)
+            else:
+                out["queued"].append(a.email)
+        return {k: v for k, v in out.items() if v}
+
+    def alerts(self) -> list[tuple[str, str, str]]:
+        """Accounts needing attention: (level, email, reason)."""
+        out: list[tuple[str, str, str]] = []
+        with self._lock:
+            rows = list(self.accounts.values())
+        for a in rows:
+            if a.banned:
+                out.append(("ban", a.email, "banned"))
+            elif a.status == "failed":
+                out.append(("err", a.email, a.note or "failed"))
+            elif a.daily_zaps >= 21.0:
+                out.append(("cap", a.email, f"daily cap {a.daily_zaps:.1f}/21"))
+            elif a.note == "capped":
+                out.append(("cap", a.email, "daily cap reached"))
+        return out
+
+    def timeseries(self) -> dict[str, Any]:
+        """Run metrics for the time-series panel."""
+        with self._lock:
+            hist = list(self.zaps_history)
+            turns = self.turns_ok
+            fails = sum(1 for a in self.accounts.values() if a.status == "failed")
+        rate = hist[-1] if hist else 0.0
+        peak = max(hist) if hist else 0.0
+        avg = (sum(hist) / len(hist)) if hist else 0.0
+        ok = turns + fails
+        return {
+            "series": hist,
+            "rate": rate, "peak": peak, "avg": avg,
+            "success_rate": (turns / ok * 100.0) if ok else 100.0,
+            "turns": turns, "fails": fails,
+        }
+
     def snapshot_logs(self, limit: int = 100) -> list[tuple[float, str]]:
         with self._lock:
             return self.logs[-limit:]

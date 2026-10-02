@@ -248,6 +248,108 @@ class LogsView(Vertical):
         self._seen = len(logs)
 
 
+class PipelineView(Vertical):
+    """Kanban: accounts grouped by pipeline stage."""
+
+    STAGES = [("queued", "queued"), ("captcha", "captcha"), ("signup", "signup"),
+              ("otp", "otp"), ("create", "create"), ("referral", "referral"),
+              ("consoname", "onboard"), ("missions", "missions"), ("farm", "earning"),
+              ("done", "done"), ("failed", "failed")]
+
+    def compose(self) -> ComposeResult:
+        yield Static("PIPELINE", id="pipe-title")
+        yield Static(id="pipe-body")
+
+    def refresh_view(self) -> None:
+        st = get_app_state()
+        stages = st.pipeline_stages()
+        cols: list[str] = []
+        for key, label in self.STAGES:
+            members = stages.get(key, [])
+            color = {"failed": "red", "done": "green"}.get(key, "cyan")
+            head = f"[b {color}]{label}[/b {color}] [dim]({len(members)})[/dim]"
+            body = "\n".join(f"  [dim]·[/dim] {mask_email(m)}" for m in members[:8]) or "  [dim]—[/dim]"
+            if len(members) > 8:
+                body += f"\n  [dim]+{len(members) - 8} more[/dim]"
+            cols.append(f"{head}\n{body}")
+        # two columns of stages
+        half = (len(cols) + 1) // 2
+        rows = []
+        for i in range(half):
+            left = cols[i]
+            right = cols[i + half] if i + half < len(cols) else ""
+            lw = 40
+            lp = "\n".join(line.ljust(lw) for line in left.splitlines())
+            rp = right
+            merged = "\n".join(
+                f"{a}   {b}" for a, b in zip(lp.splitlines(), (rp.splitlines() + [""] * 12))
+            )
+            rows.append(merged)
+        self.query_one("#pipe-body", Static).update("\n\n".join(rows))
+
+
+class MetricsView(Vertical):
+    """Time-series: zaps/min chart + success rate + latency-ish stats."""
+
+    def compose(self) -> ComposeResult:
+        yield Static("METRICS", id="met-title")
+        yield Static(id="met-body")
+
+    def refresh_view(self) -> None:
+        st = get_app_state()
+        ts = st.timeseries()
+        hist = ts["series"][-60:]
+        # vertical bar chart (12 rows) of the series
+        if hist:
+            top = max(hist) or 1.0
+            rows = 10
+            chart = []
+            for r in range(rows, 0, -1):
+                threshold = top * r / rows
+                line = "".join("█" if v >= threshold else " " for v in hist)
+                chart.append(f"{threshold:5.1f} │{line}")
+            chart.append("      └" + "─" * len(hist))
+        else:
+            chart = ["  [dim](no data yet — start a run)[/dim]"]
+        stats = (
+            f"[b]current[/b] {ts['rate']:.1f}/min  ·  [b]avg[/b] {ts['avg']:.1f}/min  ·  "
+            f"[b]peak[/b] {ts['peak']:.1f}/min\n"
+            f"[b]turns[/b] {ts['turns']}  ·  [b]failed[/b] {ts['fails']}  ·  "
+            f"[b]success[/b] [green]{ts['success_rate']:.1f}%[/green]"
+        )
+        self.query_one("#met-body", Static).update(
+            "\n".join(chart) + "\n\n" + stats
+        )
+
+
+class AlertsView(Vertical):
+    """Triage: only accounts needing attention, with a summary line."""
+
+    def compose(self) -> ComposeResult:
+        yield Static("ALERTS", id="alr-title")
+        yield Static(id="alr-body")
+
+    def refresh_view(self) -> None:
+        st = get_app_state()
+        alerts = st.alerts()
+        rows = st.snapshot_accounts()
+        ok = sum(1 for a in rows if a.status == "active" and not a.banned)
+        if not alerts:
+            self.query_one("#alr-body", Static).update(
+                f"[green]✓ all clear[/green] — {ok} accounts earning normally"
+            )
+            return
+        icon = {"ban": "[red]⛔[/red]", "err": "[yellow]✗[/yellow]", "cap": "[dim]⏸[/dim]"}
+        lines = [f"[b]NEEDS ATTENTION[/b] [red]({len(alerts)})[/red]", ""]
+        for level, email, reason in alerts[:20]:
+            lines.append(f" {icon.get(level, '·')}  {mask_email(email):30}  [dim]{reason}[/dim]")
+        if len(alerts) > 20:
+            lines.append(f" [dim]… +{len(alerts) - 20} more[/dim]")
+        lines.append("")
+        lines.append(f"[dim]{ok} accounts earning normally[/dim]")
+        self.query_one("#alr-body", Static).update("\n".join(lines))
+
+
 @dataclass
 class RunOptions:
     kind: str          # "register" | "daily" | "monitor"
@@ -340,9 +442,11 @@ class ConsoTUI(App):
     #platforms { padding: 1 2 0 2; color: #c9d1d9; }
     #counts { padding: 0 2; }
     #top { padding: 1 2; color: #8b949e; }
-    AccountsView, LogsView { height: 1fr; }
-    #acct-title, #log-title { padding: 0 2; color: #58a6ff; text-style: bold; }
+    AccountsView, LogsView, PipelineView, MetricsView, AlertsView { height: 1fr; }
+    #acct-title, #log-title, #pipe-title, #met-title, #alr-title {
+        padding: 0 2; color: #58a6ff; text-style: bold; }
     #acct-filter { margin: 0 2 1 2; }
+    #pipe-body, #met-body, #alr-body { padding: 1 2; }
     DataTable { height: 1fr; }
     RichLog { height: 1fr; }
     Footer { background: #161b22; color: #8b949e; }
@@ -351,6 +455,9 @@ class ConsoTUI(App):
     BINDINGS = [
         Binding("1", "show('overview')", "Overview", priority=True),
         Binding("2", "show('accounts')", "Accounts", priority=True),
+        Binding("3", "show('pipeline')", "Pipeline", priority=True),
+        Binding("4", "show('metrics')", "Metrics", priority=True),
+        Binding("5", "show('alerts')", "Alerts", priority=True),
         Binding("l", "show('logs')", "Logs", priority=True),
         Binding("m", "menu", "Menu", priority=True),
         Binding("p", "poll_stats", "Refresh stats", priority=True),
@@ -362,6 +469,9 @@ class ConsoTUI(App):
         yield AppHeader()
         yield OverviewView(id="overview")
         yield AccountsView(id="accounts")
+        yield PipelineView(id="pipeline")
+        yield MetricsView(id="metrics")
+        yield AlertsView(id="alerts")
         yield LogsView(id="logs")
         yield Footer()
 
@@ -400,7 +510,7 @@ class ConsoTUI(App):
         threading.Thread(target=work, daemon=True).start()
 
     def _apply_visibility(self) -> None:
-        for name in ("overview", "accounts", "logs"):
+        for name in ("overview", "accounts", "pipeline", "metrics", "alerts", "logs"):
             self.query_one(f"#{name}").display = (name == self._active)
 
     def action_show(self, name: str) -> None:

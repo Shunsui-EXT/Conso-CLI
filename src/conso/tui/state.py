@@ -17,6 +17,21 @@ class Sym:
     PENDING = "○"
 
 
+# Unicode block ramp for sparklines (low -> high).
+_SPARK = "▁▂▃▄▅▆▇█"
+
+
+def sparkline(values: list[float], width: int = 40) -> str:
+    """Render a compact bar sparkline from a numeric series."""
+    if not values:
+        return ""
+    vals = values[-width:]
+    lo, hi = min(vals), max(vals)
+    span = (hi - lo) or 1.0
+    return "".join(_SPARK[min(len(_SPARK) - 1, int((v - lo) / span * (len(_SPARK) - 1) + 0.5))]
+                   for v in vals)
+
+
 def mask_email(email: str | None) -> str:
     if not email or "@" not in email:
         return "••••••"
@@ -76,6 +91,9 @@ class AppState:
         self.platform_zaps: dict[str, float] = {}   # platform -> zaps this run
         self.platform_turns: dict[str, int] = {}    # platform -> turns this run
         self.failed_reasons: dict[str, int] = {}    # reason -> count
+        self.zaps_history: list[float] = []         # per-second run zaps (sparkline)
+        self._last_sample_at: float = 0.0
+        self._last_zaps: float = 0.0
         self._bus = get_event_bus()
         self._bus.subscribe_all(self._on_event)
 
@@ -95,6 +113,9 @@ class AppState:
                 self.platform_zaps = {}
                 self.platform_turns = {}
                 self.failed_reasons = {}
+                self.zaps_history = []
+                self._last_sample_at = time.time()
+                self._last_zaps = 0.0
             elif event.type == EventType.BATCH_COMPLETED:
                 self.batch.status = d.get("status", "COMPLETED")
             elif event.type == EventType.BATCH_STOPPED:
@@ -149,6 +170,40 @@ class AppState:
                     self.logs = self.logs[-500:]
 
     # -- snapshots (copy under lock) --------------------------------------
+    def sample(self) -> None:
+        """Record a per-second zaps sample for the sparkline (call ~1/s)."""
+        with self._lock:
+            now = time.time()
+            if self._last_sample_at == 0.0:
+                self._last_sample_at = now
+                self._last_zaps = self.run_zaps
+                return
+            dt = now - self._last_sample_at
+            if dt < 0.5:
+                return
+            rate = (self.run_zaps - self._last_zaps) / dt
+            self.zaps_history.append(round(rate, 3))
+            if len(self.zaps_history) > 120:
+                self.zaps_history = self.zaps_history[-120:]
+            self._last_sample_at = now
+            self._last_zaps = self.run_zaps
+
+    def portfolio(self) -> dict[str, Any]:
+        """Aggregate server stats for the idle 'portfolio health' view."""
+        with self._lock:
+            rows = list(self.accounts.values())
+        known = [a for a in rows if a.total_zaps > 0 or a.daily_zaps > 0]
+        daily = [a.daily_zaps for a in known]
+        return {
+            "accounts": len(rows),
+            "store_zaps": sum(a.total_zaps for a in rows),
+            "banned": sum(1 for a in rows if a.banned),
+            "avg_daily": (sum(daily) / len(daily)) if daily else 0.0,
+            "avg_streak": (sum(a.streak for a in known) / len(known)) if known else 0.0,
+            "avg_boost": (sum(a.boost for a in known) / len(known)) if known else 1.0,
+            "top": sorted(rows, key=lambda a: a.total_zaps, reverse=True)[:5],
+        }
+
     def snapshot_accounts(self) -> list[AccountRow]:
         with self._lock:
             return list(self.accounts.values())
@@ -192,7 +247,6 @@ class AppState:
             self.total_zaps = sum(a.total_zaps or a.zaps for a in self.accounts.values())
 
     def account_counts(self) -> dict[str, int]:
-        with self._lock:
             counts = {"active": 0, "failed": 0, "running": 0, "pending": 0}
             for a in self.accounts.values():
                 counts[a.status] = counts.get(a.status, 0) + 1

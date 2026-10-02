@@ -35,7 +35,7 @@ from textual.widgets import (
 )
 
 from .banner import AppHeader
-from .state import Sym, get_app_state, mask_email
+from .state import Sym, get_app_state, mask_email, sparkline
 
 
 class Metric(Static):
@@ -51,17 +51,21 @@ class Metric(Static):
 
 
 class OverviewView(VerticalScroll):
+    """Adaptive overview: live monitor while a run is active, portfolio health
+    when idle."""
+
     def compose(self) -> ComposeResult:
         yield Static("CONSO FARM — Mission Control", id="title")
         yield Static(id="statusline")
         with Horizontal(id="metrics"):
             yield Metric("RUN ZAPS", "magenta")
-            yield Metric("ACCOUNTS", "green")
+            yield Metric("DONE", "green")
             yield Metric("TURNS", "cyan")
-            yield Metric("MISSIONS", "yellow")
-            yield Metric("FAILED", "red")
             yield Metric("RATE/min", "cyan")
+            yield Metric("FAILED", "red")
+            yield Metric("MISSIONS", "yellow")
         yield ProgressBar(total=100, show_eta=False, id="progress")
+        yield Static(id="spark")
         yield Static(id="detail")
         yield Static(id="platforms")
         yield Static(id="counts")
@@ -69,85 +73,106 @@ class OverviewView(VerticalScroll):
 
     def refresh_view(self) -> None:
         st = get_app_state()
+        st.sample()
         b = st.snapshot_batch()
+        if b.status == "RUNNING":
+            self._render_running(st, b)
+        else:
+            self._render_idle(st, b)
+
+    # -- RUNNING: live monitor ---------------------------------------------
+    def _render_running(self, st, b) -> None:
         m = st.metrics()
         counts = st.account_counts()
-        rows = st.snapshot_accounts()
-
-        running = b.status == "RUNNING"
-        # -- status line ---------------------------------------------------
-        if running:
-            eta = ""
-            if b.rate > 0 and b.target > b.done:
-                eta = f"   ETA {(b.target - b.done) / b.rate:.1f} min"
-            status_txt = (f"[b green]● RUNNING[/b green]  {b.done}/{b.target} done  "
-                          f"{b.failed} failed  {b.elapsed:.0f}s{eta}")
-        elif b.status in ("COMPLETED", "STOPPED"):
-            status_txt = (f"[b yellow]■ {b.status}[/b yellow]  {b.done}/{b.target} done  "
-                          f"{b.failed} failed  {b.elapsed:.0f}s")
-        else:
-            status_txt = ("[b]○ IDLE[/b]  tekan [b]M[/b] untuk menu "
-                          "(Register / Daily task)")
-        self.query_one("#statusline", Static).update(status_txt)
-
-        # -- metric tiles --------------------------------------------------
+        eta = ""
+        if b.rate > 0 and b.target > b.done:
+            eta = f"   [dim]ETA {(b.target - b.done) / b.rate:.1f} min[/dim]"
+        self.query_one("#statusline", Static).update(
+            f"[b green]● RUNNING[/b green]  {b.done}/{b.target} done  "
+            f"{b.failed} failed  {b.elapsed:.0f}s{eta}"
+        )
         tiles = list(self.query(Metric))
-        vals = [
-            f"{st.run_zaps:.2f}",
-            f"{counts.get('active', 0)}",
-            f"{m['turns']}",
-            f"{m['missions']}",
-            f"{b.failed}",
-            f"{b.rate:.1f}" if running else "—",
-        ]
-        for tile, v in zip(tiles, vals):
+        for tile, v in zip(tiles, [
+            f"{st.run_zaps:.2f}", f"{b.done}/{b.target}",
+            f"{m['turns']}", f"{b.rate:.1f}", f"{b.failed}", f"{m['missions']}",
+        ]):
             tile.update_value(v)
 
         pct = (b.done / b.target * 100) if b.target else 0.0
         self.query_one("#progress", ProgressBar).update(total=100, progress=min(100, pct))
 
-        # -- detail line ---------------------------------------------------
-        banned = sum(1 for a in rows if a.banned)
-        active_total = sum(a.total_zaps for a in rows)
-        avg_boost = (sum(a.boost for a in rows) / len(rows)) if rows else 1.0
+        self.query_one("#spark", Static).update(
+            f"[b]zaps/min[/b] {sparkline(st.zaps_history, 44)}  [dim](avg {b.rate:.1f})[/dim]"
+        )
         self.query_one("#detail", Static).update(
             f"[b]solver[/b] {b.solver or '—'}   [b]referral[/b] {b.referral or '—'}   "
-            f"[b]elapsed[/b] {b.elapsed:.0f}s   "
-            f"[b]store total[/b] {active_total:.1f} zaps   "
-            f"[b]avg boost[/b] {avg_boost:.2f}   "
-            f"[b red]banned[/b red] {banned}"
+            f"[b]elapsed[/b] {b.elapsed:.0f}s   [b]run zaps[/b] {st.run_zaps:.2f}"
         )
-
-        # -- platform breakdown (this run) ---------------------------------
         if st.platform_zaps:
-            parts = [f"[b]{p}[/b] {z:.1f}({st.platform_turns.get(p,0)}t)"
+            parts = [f"[b]{p}[/b] {z:.1f}[dim]({st.platform_turns.get(p, 0)}t)[/dim]"
                      for p, z in sorted(st.platform_zaps.items(), key=lambda x: -x[1])]
             self.query_one("#platforms", Static).update("[b]platforms[/b] " + "  ".join(parts))
         else:
             self.query_one("#platforms", Static).update("[b]platforms[/b] —")
-
-        # -- counts --------------------------------------------------------
         self.query_one("#counts", Static).update(
             f"[b]accounts[/b] {counts.get('total', 0)}  "
             f"[green]active {counts.get('active', 0)}[/green]  "
             f"[yellow]running {counts.get('running', 0)}[/yellow]  "
+            f"[red]failed {counts.get('failed', 0)}[/red]"
+        )
+        if st.failed_reasons:
+            reasons = "  ".join(f"{k} [red]×{v}[/red]" for k, v in
+                                sorted(st.failed_reasons.items(), key=lambda x: -x[1])[:4])
+            self.query_one("#top", Static).update(f"[b red]errors[/b red] {reasons}")
+        else:
+            self.query_one("#top", Static).update("")
+
+    # -- IDLE: portfolio health --------------------------------------------
+    def _render_idle(self, st, _b) -> None:
+        p = st.portfolio()
+        self.query_one("#statusline", Static).update(
+            "[b]○ IDLE[/b]   tekan [b]M[/b] untuk menu (Register / Daily task)   ·   "
+            "[b]p[/b] refresh stats server"
+        )
+        tiles = list(self.query(Metric))
+        for tile, v in zip(tiles, [
+            f"{p['store_zaps']:.0f}", f"{p['accounts']}",
+            f"{p['avg_streak']:.1f}", "—", f"{p['banned']}", "—",
+        ]):
+            tile.update_value(v)
+
+        # cap utilization: avg daily vs the 21 budget
+        cap_pct = min(100.0, p["avg_daily"] / 21.0 * 100.0)
+        self.query_one("#progress", ProgressBar).update(total=100, progress=cap_pct)
+
+        tops = [a.total_zaps for a in p["top"]]
+        self.query_one("#spark", Static).update(
+            f"[b]top zaps[/b] {sparkline(tops, 44)}  "
+            f"[dim](top {tops[0]:.0f} · med {(sorted(tops)[len(tops)//2] if tops else 0):.0f})[/dim]"
+        )
+        self.query_one("#detail", Static).update(
+            f"[b]avg daily[/b] {p['avg_daily']:.1f}/21 ({cap_pct:.0f}%)   "
+            f"[b]avg boost[/b] {p['avg_boost']:.2f}   "
+            f"[b]banned[/b] [red]{p['banned']}[/red]"
+        )
+        self.query_one("#platforms", Static).update("")
+
+        counts = st.account_counts()
+        self.query_one("#counts", Static).update(
+            f"[b]accounts[/b] {counts.get('total', 0)}  "
+            f"[green]active {counts.get('active', 0)}[/green]  "
             f"[red]failed {counts.get('failed', 0)}[/red]  "
             f"[dim]pending {counts.get('pending', 0)}[/dim]"
         )
-
-        # -- top accounts by server total ----------------------------------
-        top = sorted(rows, key=lambda a: a.total_zaps, reverse=True)[:5]
-        if top and top[0].total_zaps > 0:
-            lines = [f"  {i+1}. {mask_email(a.email)}  {a.total_zaps:.1f} zaps "
-                     f"(today {a.daily_zaps:.1f}, streak {a.streak})"
-                     for i, a in enumerate(top)]
+        if p["top"] and p["top"][0].total_zaps > 0:
+            lines = [f"  {i+1}. {mask_email(a.email)}  [b]{a.total_zaps:.1f}[/b] zaps "
+                     f"[dim](today {a.daily_zaps:.1f}, streak {a.streak})[/dim]"
+                     for i, a in enumerate(p["top"])]
             self.query_one("#top", Static).update("[b]top accounts[/b]\n" + "\n".join(lines))
-        elif st.failed_reasons:
-            reasons = "  ".join(f"{k}×{v}" for k, v in
-                                sorted(st.failed_reasons.items(), key=lambda x: -x[1])[:4])
-            self.query_one("#top", Static).update(f"[b red]failures[/b red] {reasons}")
         else:
-            self.query_one("#top", Static).update("")
+            self.query_one("#top", Static).update(
+                "[dim]tekan p untuk refresh stats dari server[/dim]"
+            )
 
 
 class AccountsView(Vertical):
@@ -293,7 +318,8 @@ class ConsoTUI(App):
     #metrics { height: 5; padding: 0 1; }
     Metric { border: round #30363d; width: 1fr; height: 4; padding: 0 1; margin: 0 1; }
     #progress { margin: 1 2; }
-    #detail { padding: 0 2; color: #8b949e; }
+    #spark { padding: 0 2; color: #7ee787; }
+    #detail { padding: 1 2 0 2; color: #8b949e; }
     #platforms { padding: 1 2 0 2; color: #c9d1d9; }
     #counts { padding: 0 2; }
     #top { padding: 1 2; color: #8b949e; }

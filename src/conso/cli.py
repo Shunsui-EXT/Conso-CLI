@@ -118,9 +118,11 @@ def test(
 def register(
     count: int = typer.Argument(..., help="Number of accounts to create."),
     referral: str = typer.Option("", help="Referral code to redeem per account."),
+    earn: bool = typer.Option(False, "--earn", help="Immediately earn zaps after each account registers."),
+    turns: int = typer.Option(10, help="Turns per account when --earn is set."),
     dry_run: bool = typer.Option(False, "--dry-run", help="Generate identities only, no network."),
 ) -> None:
-    """Provision accounts."""
+    """Provision accounts (registration only; use --earn to farm right after)."""
     settings = Settings.from_env()
     if dry_run:
         rng = random.Random()
@@ -151,6 +153,20 @@ def register(
     )
     ok = sum(1 for r in results if r.status == "active")
     _log(f"register done: {ok}/{len(results)} active -> {store.json_path}")
+
+    if earn and ok:
+        _log(f"register: --earn set, farming {ok} new account(s)")
+        runner = DailyLoop(settings, store, config=LoopConfig(turns=turns),
+                           solver=solver, verifier=verifier, logger=_log)
+        for r in results:
+            if r.status != "active":
+                continue
+            record = next((a for a in store.all() if a.email == r.email), None)
+            if record is None:
+                continue
+            info = runner.run_account(record)
+            _log(f"register: {r.email} earned +{info.get('zaps', 0)} zaps "
+                 f"(status={info.get('status')})")
 
 
 @app.command()

@@ -51,6 +51,7 @@ python main.py test
 # Provision accounts (resumable; dry-run generates identities only)
 python main.py register 10 --dry-run
 python main.py register 10 --referral <CODE>
+python main.py register 10 --earn            # register THEN immediately earn zaps
 
 # Submit synthetic turns to earn zaps
 python main.py farm --turns 20 --dry-run
@@ -76,6 +77,10 @@ All via `.env` (see `.env.example`). Key values:
 
 ## Status
 
+- **Register does NOT earn by default.** `register` provisions the account
+  (signup → OTP → create_consouser → referral → onboarding) and stops at
+  `total_zaps = 0`. Earning is a separate step (`farm`, `earn`, `loop`), or pass
+  `register --earn` to run the earn cycle immediately after each account.
 - **Verified end-to-end (real zaps credited):**
   `temp.tf inbox -> Turnstile solve -> signup -> email OTP -> verify ->
    create_consouser -> set consoname (onboarding) -> append_prompt (N turns) ->

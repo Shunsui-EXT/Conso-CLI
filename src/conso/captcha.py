@@ -189,6 +189,12 @@ class SolverServiceSolver:
         # Turnstile hang until timeout; keep it short so the direct fallback
         # runs quickly).
         self.proxy_timeout = proxy_timeout
+        # Circuit breaker: after this many consecutive proxy failures, stop
+        # trying proxies for the rest of this solver's life (a pool that cannot
+        # pass Turnstile would otherwise add proxy_timeout to every solve).
+        self._proxy_fail_streak = 0
+        self._proxy_disabled = False
+        self.proxy_max_failures = 3
         # Rotating proxy list for the sidecar's per-request `proxy` field.
         self._proxies = list(proxies or [])
         if proxy_file and not self._proxies:
@@ -196,12 +202,24 @@ class SolverServiceSolver:
         self._proxy_idx = 0
 
     def _next_proxy(self) -> str:
-        """Round-robin the proxy list; '' means solve directly."""
-        if not self._proxies:
+        """Round-robin the proxy list; '' means solve directly.
+
+        Returns '' permanently once the circuit breaker trips (the pool has
+        failed to pass Turnstile proxy_max_failures times in a row).
+        """
+        if self._proxy_disabled or not self._proxies:
             return ""
         proxy = self._proxies[self._proxy_idx % len(self._proxies)]
         self._proxy_idx += 1
         return proxy
+
+    def _report_proxy(self, ok: bool) -> None:
+        if ok:
+            self._proxy_fail_streak = 0
+            return
+        self._proxy_fail_streak += 1
+        if self._proxy_fail_streak >= self.proxy_max_failures:
+            self._proxy_disabled = True
 
     def _headers(self) -> dict[str, str]:
         headers = {"Content-Type": "application/json"}
@@ -230,6 +248,7 @@ class SolverServiceSolver:
                     sitekey, page_url, min(timeout, self.proxy_timeout), proxy
                 )
                 last_error = err
+                self._report_proxy(bool(token))
                 if token:
                     return token
                 # Fall back to a direct solve for this attempt.

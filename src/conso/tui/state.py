@@ -91,8 +91,14 @@ class AppState:
             elif event.type == EventType.ACCOUNT_STAGE:
                 email = d.get("email", "")
                 row = self.accounts.setdefault(email, AccountRow(email=email))
-                row.stage = d.get("stage", "")
-                row.status = "running"
+                stage = d.get("stage", "")
+                row.stage = stage
+                # terminal stages must not leave the row stuck on "running"
+                if stage in ("skipped", "capped"):
+                    row.status = "active"
+                    row.note = stage
+                else:
+                    row.status = "running"
             elif event.type == EventType.ACCOUNT_COMPLETED:
                 email = d.get("email", "")
                 row = self.accounts.setdefault(email, AccountRow(email=email))

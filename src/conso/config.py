@@ -67,9 +67,11 @@ class Settings:
     # Referral applied to every newly registered account.
     default_referral_code: str = ""
 
-    # Anti-abuse pacing
-    min_delay_seconds: float = 1.5
-    max_delay_seconds: float = 6.0
+    # Anti-abuse pacing. A reference implementation (analysis/REFERENCE_STUDY.md)
+    # uses 60-180s between turns on one account; shorter gaps are faster but the
+    # backend scores scripted cadence, so raise these for long-running farms.
+    min_delay_seconds: float = 20.0
+    max_delay_seconds: float = 60.0
 
     # Paths
     data_dir: str = "data"
@@ -98,8 +100,8 @@ class Settings:
             password_length=_env_int("PASSWORD_LENGTH", 16),
             display_name_prefix=_env("DISPLAY_NAME_PREFIX", "user"),
             default_referral_code=_env("DEFAULT_REFERRAL_CODE"),
-            min_delay_seconds=_env_float("MIN_DELAY_SECONDS", 1.5),
-            max_delay_seconds=_env_float("MAX_DELAY_SECONDS", 6.0),
+            min_delay_seconds=_env_float("MIN_DELAY_SECONDS", 20.0),
+            max_delay_seconds=_env_float("MAX_DELAY_SECONDS", 60.0),
             data_dir=_env("DATA_DIR", "data"),
             logs_dir=_env("LOGS_DIR", "logs"),
             proxy=ProxyConfig(

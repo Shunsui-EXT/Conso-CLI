@@ -1,324 +1,215 @@
 # Conso Automation Pipeline
 
 Reverse-engineered automation pipeline for the **Conso: AI Usage Tracker**
-Chrome extension (v0.1.4.0). Talks directly to the Conso backend (Supabase +
-`conso.xyz` API) — API-first, no browser required for turn submission.
+Chrome extension (v0.1.4.0). Talks directly to the Conso backend
+(Supabase + `conso.xyz` API) — **API-first, no browser required for the account
+and turn logic**.
 
-See `analysis/RE_REPORT.md` for the full reverse-engineering write-up.
+Built by unpacking the extension and reproducing its client-side accounting
+exactly. Full reverse-engineering write-up: [`analysis/RE_REPORT.md`](analysis/RE_REPORT.md).
 
-## Layout
+> **Scope / disclaimer.** This is a reverse-engineering research tool that
+> automates a third-party service. It is published for research and educational
+> purposes. You are responsible for how you use it and for complying with the
+> target service's terms and any applicable law. See [License](#license).
 
-```
-main.py                     entry point (python main.py <cmd>)
-src/conso/
-  constants.py              every extracted constant (endpoints, model tables, prices)
-  economy.py                faithful port of the client-side zap/USD/quality math
-  transport.py              curl_cffi fingerprinting + proxy pool with quarantine
-  client.py                 Supabase auth + RPC + conso.xyz X-API client
-  captcha.py                pluggable Turnstile solvers (service/capsolver/2captcha/manual)
-  verifiers.py              pluggable email adapters (temptf/mailtm/ncaori/imap/tempmail)
-  identity.py               email/password/consoname generation
-  session.py                session manager (cached reuse / refresh+persist / password)
-  storage.py                JSON+CSV account store, atomic writes, checkpoints
-  concurrency.py            adaptive concurrency engine + jittered pacer
-  pipeline.py               registration + turn-farming orchestration
-  earnings.py               missions, codes, account-row + summary
-  cli.py                    typer CLI (8 subcommands)
-  config.py                 env/.env settings
-extension_original/         downloaded CRX + unpacked extension
-analysis/                   RE report, schema, audit, e2e probes
-scripts/                    setup_solver.sh / start_solver.sh
-data/                       accounts.json / accounts.csv / state.json (gitignored)
-```
+---
 
-## Install
+## What it does
+
+| Phase | Command | Result |
+|---|---|---|
+| **Provision** | `register N` | Creates N accounts: Turnstile → signup → email OTP → user row → referral → onboarding |
+| **Earn** | `earn` / `farm` | Claims daily/bonus missions and submits synthetic AI-usage turns for zaps |
+| **Keep alive** | `session` / `recover` | Reuses/refreshes sessions without re-login; recovers via email OTP |
+| **Automate** | `loop` / `pipeline` | Recurring daily cycle or a one-shot register→earn chain |
+| **Monitor** | `dashboard` | Textual TUI: live batch, accounts, logs |
+
+## Quick start
 
 ```bash
 python3 -m venv .venv
 . .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env   # then fill EMAIL_DOMAIN etc.
-```
+cp .env.example .env          # then edit (see Configuration)
 
-## Usage
+# (optional) download the extension for local analysis
+bash scripts/fetch_extension.sh
 
-```bash
-export PYTHONPATH=src
-
-# Pre-flight: transport, backend reachability, economy sanity
+# Pre-flight: transport, backend reachability, captcha posture
 python main.py test
 
-# Provision accounts (resumable; dry-run generates identities only)
-python main.py register 10 --dry-run
-python main.py register 10 --referral <CODE>
-python main.py register 10 --earn            # register THEN immediately earn zaps
+# One account, fully provisioned, then earn
+python main.py pipeline --register 1 --earn
 
-# Submit synthetic turns to earn zaps
-python main.py farm --turns 20 --dry-run
-python main.py farm --turns 20 --email user@domain
-
-# Export / proxy health
-python main.py export --fmt csv
-python main.py verify
+# Interactive TUI
+python main.py dashboard
 ```
+
+## Requirements
+
+- Python 3.10+
+- Runtime deps: `tiktoken`, `curl_cffi`, `httpx`, `python-dotenv`, `rich`,
+  `typer`, `textual` (see [`requirements.txt`](requirements.txt)).
+- The `internal` captcha solver additionally needs Camoufox:
+  `pip install 'camoufox[geoip]>=0.4.0' && python -m camoufox fetch`
+  (pin `playwright==1.60` to match the fetched browser build).
+- The optional `service` solver sidecar needs the vendored
+  `vendor/captcha-solver` (`bash scripts/setup_solver.sh`).
+
+## Layout
+
+```
+main.py                       entry point (python main.py <cmd>)
+src/conso/
+  constants.py                every extracted constant (endpoints, model tables, prices)
+  economy.py                  faithful port of the client-side zap/USD/quality math
+  transport.py                curl_cffi TLS/JA3 fingerprinting + proxy pool
+  client.py                   Supabase auth + PostgREST RPC + conso.xyz X-API
+  captcha.py                  pluggable Turnstile solvers
+  internal_solver.py          in-process Camoufox Turnstile solver (no sidecar)
+  verifiers.py                pluggable email adapters
+  identity.py                 email/password/consoname generation
+  session.py                  session manager (cached reuse / refresh+persist / password)
+  storage.py                  JSON+CSV account store, atomic writes, checkpoints
+  concurrency.py              adaptive concurrency engine + jittered pacer
+  limits.py                   daily-limit status + limit classification
+  earnings.py                 missions, codes, account-row + summary
+  pipeline.py                 registration + turn-farming orchestration
+  scheduler.py                daily earn loop (resumable ledger)
+  orchestrator.py             one-shot register -> earn -> loop chain
+  tui/                        Textual dashboard (events / state / app)
+  cli.py                      typer CLI (15 subcommands)
+  config.py                   env/.env settings
+extension_original/           downloaded CRX + unpacked extension (v0.1.4.0)
+analysis/                     RE report, schema, solver studies, probes
+scripts/                      solver setup/start, parallel register, watchdog
+vendor/captcha-solver/        optional CloakBrowser sidecar (gitignored; 31 MB)
+data/                         accounts.json / accounts.csv / state.json (gitignored)
+```
+
+## CLI reference
+
+| Command | Purpose |
+|---|---|
+| `test` | Pre-flight: economy sanity, backend reachability, captcha posture, proxy health |
+| `register N` | Provision N accounts (`--dry-run`, `--referral`, `--earn`, `--turns`) |
+| `pipeline` | One-shot chain: `--register N --earn --loop --only-new --workers N` |
+| `dashboard` | Launch the Textual TUI control center |
+| `farm` | Missions + synthetic turns (`--turns`, `--email`, `--earn/--no-earn`) |
+| `earn` | Claim missions/codes (`--list`, `--referral`, `--access`, `--missions`) |
+| `loop` | Recurring daily cycle (`--once`, `--interval-hours`, `--workers`, `--daily-cap`) |
+| `session` | Show/refresh stored sessions without re-login (`--force`) |
+| `recover` | Refresh → password → email OTP recovery |
+| `status` | Daily-limit / earning state per account |
+| `solve` | Solve one Turnstile challenge (sanity check) |
+| `proxies` | Health-check a proxy list |
+| `doctor` | Report whether the pipeline is browser-free + what each layer uses |
+| `export` | Dump the account store (`--fmt csv\|json`) |
+| `verify` | Health-check the proxy pool |
 
 ## Configuration
 
-All via `.env` (see `.env.example`). Key values:
+All via `.env` (see [`.env.example`](.env.example)).
 
 | Var | Meaning |
 |---|---|
-| `EMAIL_DOMAIN` | Catch-all / disposable domain for account emails (**required**) |
-| `PROXY_URLS` | Comma-separated HTTP/SOCKS5 pool (empty = direct) |
-| `VERIFIER` | `none` \| `imap` \| `tempmail` |
-| `CONCURRENCY` / `MAX_CONCURRENCY` | Adaptive concurrency bounds |
-| `MIN_DELAY_SECONDS` / `MAX_DELAY_SECONDS` | Jittered pacing between requests |
+| `VERIFIER` | `temptf` \| `mailtm` \| `ncaori` \| `imap` \| `tempmail` \| `none` |
+| `TEMPTF_PROVIDER` | `gmail` \| `outlook` \| `hotmail` (real-provider aliases) |
+| `CAPTCHA_PROVIDER` | `internal` \| `capsolver` \| `2captcha` \| `service` \| `manual` \| `none` |
+| `SOLVER_MAX_CONCURRENT` | Camoufox solve concurrency (sweet spot **8**) |
+| `SOLVER_SOLVE_DELAY` | Seconds between solves (keeps the IP unflagged) |
+| `DEFAULT_REFERRAL_CODE` | Referral applied to every new account |
+| `PROXY_FILE` / `PROXY_PER_ACCOUNT` | Proxy pool; one proxy pinned per account |
+| `CONCURRENCY` / `MAX_CONCURRENCY` | Adaptive registration concurrency bounds |
 | `IMPERSONATE` | curl_cffi TLS profile (`chrome`, `chrome124`, …) |
 
-## Status
-
-- **Register does NOT earn by default.** `register` provisions the account
-  (signup → OTP → create_consouser → referral → onboarding) and stops at
-  `total_zaps = 0`. Earning is a separate step (`farm`, `earn`, `loop`), or pass
-  `register --earn` to run the earn cycle immediately after each account.
-- **Verified end-to-end (real zaps credited):**
-  `temp.tf inbox -> Turnstile solve -> signup -> email OTP -> verify ->
-   create_consouser -> set consoname (onboarding) -> append_prompt (N turns) ->
-   zaps credited + leaderboard rank improves`.
-  Credited zaps equal the client-computed values exactly (server does not
-  clamp `p_base_zaps`/`p_spend_usd`).
-- **Turnstile:** enforced on all Supabase auth endpoints; solved via the local
-  sidecar; submitted in the `gotrue_meta_security` envelope. Stub tokens are
-  rejected — only the real-page solve works.
-- **Email:** temp.tf provides real `gmail.com`/`outlook.com`/`hotmail.com`
-  plus-aliases that pass Conso's allowlist (mail.tm / ncaori domains are
-  blocked). Confirmation is a **6-digit OTP**, not a link.
-- **Onboarding is mandatory:** `append_prompt` before `set_consoname` bans the
-  account (`account_banned`). The pipeline sets the consoname first.
-- **Open:** rate limits at scale; whether repeated plus-aliases on the same
-  underlying mailbox get flagged; per-account daily caps.
-
-## Daily loop
-
-Run the full earn cycle (missions + turns) on a schedule, resumable across
-restarts:
-
-```bash
-python main.py loop --once                 # one cycle now, exit
-python main.py loop --interval-hours 24    # run daily forever (Ctrl-C to stop)
-python main.py loop --turns 10 --daily-cap 25
-python main.py loop --no-missions          # turns only
-```
-
-The loop records each run in `state.json` (`daily_loop.<date>.<email>`) and
-skips accounts already done that day, so overlaps/restarts never double-submit.
-It also stops an account at the first zero-credit turn (the daily cap).
-
-## Daily limits
-
-`append_prompt` credits only ~**10 turns per account per day**; past that the
-server returns `200 0` (soft flag) and bans on the next turn. The pipeline stops
-at the first zero-credit turn automatically. Check state with:
-
-```bash
-python main.py status        # total/daily zaps, streak, boost, banned flag
-```
-
-`limits.py` exposes `get_daily_status()` (reads `daily_zaps_earned` /
-`daily_zaps_date`, resets on date rollover) and `classify_limit()`.
-
-## Earning surfaces
-
-Beyond turn farming, the pipeline claims every mission/code path:
-
-| Surface | RPC | Reward |
-|---|---|---|
-| Daily check-in | `claim_daily_mission(daily-checkin-v1)` | +2 |
-| Tweet mission | `claim_daily_mission(tweet-about-conso-v1)` | +3 |
-| Article mission | `claim_bonus_mission(article-about-conso-v1)` | +15 |
-| Referral code | `redeem_referral_code` | varies |
-| Access code | `redeem_access_code` | varies |
-| Turn farming | `append_prompt` | per-turn formula |
-
-Claims are **idempotent per day** — a repeat returns `rate_limited`, treated as
-already-claimed. `get_todays_mission_claims` lists what's done, so runs skip it.
-
-```bash
-python main.py earn --list           # show available missions
-python main.py earn                  # claim all (all accounts)
-python main.py earn --referral CODE  # also redeem a referral code
-python main.py earn --access CODE    # also redeem an access code
-python main.py farm --turns 10       # claims missions THEN farms (--no-earn to skip)
-```
-
-`get_lifetime_platform_stats` returns per-platform aggregates
-(`credited_zaps`, `spend_usd`, `prompt_count`, …) for reporting.
-
-## Referral
-
-Every new account redeems a default referral code automatically. Set it once:
-
-```bash
-# .env
-DEFAULT_REFERRAL_CODE=CONSO-GG53G
-```
-
-Order matters: the extension shows the referral screen right after
-`create_consouser` and **before** picking a consoname, so the pipeline redeems
-the code before onboarding (`create_consouser -> redeem_referral_code ->
-set_consoname`). Per-run override: `python main.py register 5 --referral CODE`.
-
-## Solver proxy pool
-
-The captcha sidecar accepts a per-request `proxy` field, so the solver can run
-each solve through a rotating proxy (clean IP per solve):
-
-```bash
-# .env
-SOLVER_PROXY_FILE=data/proxies.txt    # one proxy per line: http://user:pass@host:port
-```
-
-```bash
-python main.py proxies               # health-check the list
-python main.py proxies --limit 20    # test the first 20
-```
-
-`SolverServiceSolver` round-robins the list and sends `proxy` in each `/solve`
-body. **Any** proxy attempt that fails (no token, timeout, 500, socket drop)
-falls back to a **direct** solve for that attempt, so a proxy that cannot pass
-the Turnstile challenge never blocks the pipeline. Lines are stripped of CRLF —
-a trailing `\r` makes the proxy URL malformed and every request fails with
-`CONNECT tunnel failed`.
-
-> Datacenter proxies often **cannot pass Turnstile**: Cloudflare serves a harder
-> challenge to hosting IPs (the checkbox is clicked but no token is issued, or
-> the socket drops with `net::ERR_SOCKET_NOT_CONNECTED`). Verified: a fresh
-> solver solves directly in ~10s but times out through all tested proxies. The
-> direct fallback keeps solves working; use **residential** proxies if you need
-> the solve itself to run on a proxy IP.
-
-## Browser-free mode
-
-The core pipeline (`src/conso/`) is **already pure HTTP** — no Playwright,
-CloakBrowser, Selenium, or any browser. Every layer talks HTTP directly:
-
-| Layer | Mechanism |
-|---|---|
-| Transport | `curl_cffi` (TLS/JA3 fingerprint impersonation) |
-| Auth | Supabase GoTrue REST |
-| Data | PostgREST RPC |
-| Email | temp.tf / mail.tm HTTP API |
-| Captcha | Capsolver / 2Captcha **managed API** (pure HTTP) |
-
-The only browser anywhere is the optional `service` captcha sidecar
-(`vendor/captcha-solver`, CloakBrowser). To run **fully browser-free**, point
-the captcha layer at a managed API instead:
-
-```bash
-# .env
-CAPTCHA_PROVIDER=capsolver        # or 2captcha
-CAPSOLVER_API_KEY=...             # from capsolver.com
-```
-
-Verify:
-
-```bash
-python main.py doctor
-```
-
-`doctor` reports which browser libs are present, confirms `src/` imports none,
-and flags whether the configured captcha provider is browser-free.
-
-> Trade-off: the `service` sidecar is free but runs a local browser and can hit
-> Cloudflare rate-flags. A managed API is browser-free and IP-agnostic but
-> costs per solve. Everything else is identical.
-
-## Session recovery (reuse the signup address)
-
-**Yes — the temp.tf address can be reused later for OTP.** Verified live: an
-alias keeps receiving mail as long as the underlying provider account exists
-(temp.tf FAQ), and a fresh OTP delivered to a stored address verified back into
-a session. So an account is never locked out as long as its address is saved.
-
-Recovery order (used automatically when a session breaks):
-
-```bash
-python main.py recover            # refresh -> password (Turnstile) -> email OTP
-```
-
-1. **refresh** — reuse the rotated refresh token (no captcha).
-2. **password** — `sign_in_password` (needs a Turnstile solve).
-3. **email OTP** — `sign_in_otp` to the stored address, read the code from the
-   inbox, `verify_otp`. This is the path that proves the address is reusable.
-
-`farm` and `loop` auto-recover when `ensure_session` fails, so a broken session
-never needs a manual re-register.
-
-## Sessions (no re-login)
-
-Login requires solving Turnstile, so the pipeline persists and reuses sessions:
-
-- Registration stores `access_token`, `refresh_token`, and `expires_at`.
-- `SessionManager.ensure_session()` reuses the cached access token while valid,
-  otherwise **refreshes and persists the rotated refresh token** (Supabase
-  rotates the refresh token on every use), and only falls back to password
-  login (Turnstile) if the refresh chain breaks.
-- Farm resolves sessions through `SessionManager`, so `farm` runs with
-  `session=cached` / `session=refreshed` — **no Turnstile, no re-login**.
-
-```bash
-python main.py session            # show + refresh all stored sessions
-python main.py session --force    # force a refresh now
-```
-
-Verified: repeated refreshes rotate the token each time and the chain stays
-valid; `farm` reuses the cached session with zero re-authentication.
-
-## End-to-end flow
+## How it works (end-to-end)
 
 ```
-register:  temp.tf inbox (real gmail/outlook alias)      verifiers.py
-           -> [Turnstile real-page solve @ :8877]        captcha.py
-           -> POST /auth/v1/signup + gotrue_meta_security captcha_token
-           -> read 6-digit OTP from inbox
-           -> POST /auth/v1/verify {type:email,token}     client.py
+register:  temp.tf inbox (real gmail/outlook alias)         verifiers.py
+           -> Turnstile solve (Camoufox, in-process)        internal_solver.py
+           -> POST /auth/v1/signup + gotrue_meta_security {captcha_token}
+           -> read 6-digit OTP from the inbox
+           -> POST /auth/v1/verify {type:email,token}       client.py
            -> RPC create_consouser
-           -> PATCH consousers {consoname}   (onboarding) client.py
-           -> store                                       storage.py
-farm:      refresh/login
-           -> economy.account_turn()                      economy.py
-           -> RPC append_prompt {p_entry,p_base_zaps,p_spend_usd}
+           -> RPC redeem_referral_code
+           -> PATCH consousers {consoname}   (onboarding)   client.py
+           -> store                                         storage.py
+farm:      session (cached/refreshed)
+           -> economy.account_turn()                        economy.py
+           -> RPC append_prompt {p_entry, p_base_zaps, p_spend_usd}
            -> credited_zaps (== submitted zaps)
 ```
 
-## Required environment
+**Order matters:** the referral is redeemed *before* onboarding, and the
+consoname must be set *before* the first turn — otherwise the server bans the
+account (`account_banned`).
+
+## Captcha (Turnstile)
+
+Conso enforces Cloudflare Turnstile on **every** Supabase auth endpoint. Two
+working backends:
+
+- **`internal`** (default) — an in-process Camoufox (anti-detect Firefox)
+  solver. Renders the widget from the api.js `onload` callback; the resulting
+  token is accepted by Conso. No external service. Concurrency via
+  `SOLVER_MAX_CONCURRENT` (measured sweet spot: **8**).
+- **`service`** — the optional `vendor/captcha-solver` sidecar (CloakBrowser,
+  Chromium) on `:8877`.
+- **`capsolver` / `2captcha`** — managed APIs (pure HTTP, browser-free, paid).
 
 ```bash
-VERIFIER=temptf
-TEMPTF_PROVIDER=gmail            # gmail | outlook | hotmail
-CAPTCHA_PROVIDER=service
-SOLVER_URL=http://127.0.0.1:8877
-# start the sidecar first:
-bash scripts/setup_solver.sh     # one-time (clones + installs)
-bash scripts/start_solver.sh     # run :8877
+python main.py doctor        # confirm which mode is active
+python main.py solve         # solve one challenge
 ```
 
-Then:
+See [`analysis/INTERNAL_SOLVER.md`](analysis/INTERNAL_SOLVER.md) for the Camoufox
+study and [`analysis/GROK_SOLVER_NOTES.md`](analysis/GROK_SOLVER_NOTES.md) for
+the solver design comparison.
 
-```bash
-python main.py register 1        # real account, fully provisioned + onboarded
-python main.py farm --turns 10   # submit turns, earn zaps
-```
+## Email verification
 
-## Captcha solver sidecar
+Conso confirms accounts with a **6-digit OTP** (not a link), sent to the signup
+address. The pipeline reads it via a pluggable verifier:
 
-The vendored `waguriagentic/captcha-solver` (FastAPI, CloakBrowser) runs locally:
+- **`temptf`** (recommended) — [temp.tf](https://temp.tf) real
+  `gmail.com` / `outlook.com` / `hotmail.com` plus-aliases. These pass Conso's
+  email allowlist; disposable domains (mail.tm, ncaori) are **blocked**.
+- `mailtm`, `ncaori`, `imap`, `tempmail` — alternative adapters.
 
-```bash
-bash scripts/start_solver.sh          # headed under Xvfb, :8877
-curl http://127.0.0.1:8877/health
-CAPTCHA_PROVIDER=service python main.py solve   # sanity check
-```
+## Limits & anti-abuse (measured)
 
-The Conso solve is stochastic (~1/2-5); the pipeline retries. `SolverServiceSolver`
-defaults to `real_page` and auto-appends a whitelisted `redirect_uri`.
+- **~10 credited turns per account per day.** Past that the server returns
+  `200 0` (soft flag) and bans on the next turn. The pipeline stops at the first
+  zero-credit turn and clamps `turns` to the cap.
+- **`signup_velocity_exceeded`** on rapid signups — spread by pinning a
+  **different proxy per account** (`PROXY_PER_ACCOUNT=1`).
+- **`rate_limited`** on repeated mission claims — idempotent per day.
+
+Details: [`analysis/RE_REPORT.md`](analysis/RE_REPORT.md),
+[`analysis/SOLVER_RELIABILITY.md`](analysis/SOLVER_RELIABILITY.md),
+[`analysis/PARALLEL.md`](analysis/PARALLEL.md).
+
+## Parallelism
+
+- **Registration** is bounded by the captcha solve (one IP). One Camoufox
+  browser saturates around `SOLVER_MAX_CONCURRENT=8`; going higher overloads
+  the CPU (`register 10` at mc=16 → 9/10, slower).
+- **Farm/earn** is pure HTTP and parallelizes across accounts
+  (`--workers N`, `loop --workers N`).
+- Multi-process registration (`scripts/parallel_register.sh`) works but does not
+  beat a single process unless total solve concurrency ≈ CPU cores.
+
+## Sessions (no re-login)
+
+Supabase access tokens expire (~1h) and the **refresh token rotates on every
+use**, so `SessionManager` persists the rotated token + expiry and reuses the
+cached access token while valid. `farm`/`loop` run with `session=cached` or
+`session=refreshed` — no Turnstile, no re-login. `recover` falls back to
+password then email OTP.
+
+## License
+
+MIT — see [`LICENSE`](LICENSE). The reverse-engineered constants and protocol
+details are provided for interoperability research.

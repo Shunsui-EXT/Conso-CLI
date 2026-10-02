@@ -29,13 +29,11 @@ build/
 # Vendored upstream (large ONNX models; fetch via scripts/setup_solver.sh)
 vendor/
 
-# Original extension dump (large binaries)
+# Original extension dump (third-party, copyrighted — do NOT publish).
+# Download it yourself with scripts/fetch_extension.sh; see README.
 extension_original/*.crx
 extension_original/*.zip
-extension_original/unpacked/**/*.png
-extension_original/unpacked/**/*.jpg
-extension_original/unpacked/**/*.mp4
-extension_original/unpacked/**/*.woff2
+extension_original/unpacked/
 
 # OS / editor
 .DS_Store

@@ -27,7 +27,6 @@ from textual.widgets import (
     Button,
     DataTable,
     Footer,
-    Header,
     Input,
     Label,
     ProgressBar,
@@ -35,6 +34,7 @@ from textual.widgets import (
     Static,
 )
 
+from .banner import AppHeader
 from .state import Sym, get_app_state, mask_email
 
 
@@ -315,7 +315,7 @@ class ConsoTUI(App):
     ]
 
     def compose(self) -> ComposeResult:
-        yield Header()
+        yield AppHeader()
         yield OverviewView(id="overview")
         yield AccountsView(id="accounts")
         yield LogsView(id="logs")
@@ -427,6 +427,10 @@ class ConsoTUI(App):
 
     def _tick(self) -> None:
         self._refresh_active()
+        try:
+            self.query_one(AppHeader).refresh()
+        except Exception:
+            pass
 
 
 def run() -> None:

@@ -141,3 +141,13 @@ TOKENIZER_ENCODING = "o200k_base"
 # ---------------------------------------------------------------------------
 DAILY_TURN_CAP = 10          # credited turns per account per day (measured)
 
+# Server-side zap accounting limits (measured; see analysis/REFERENCE_STUDY.md).
+#   - The server multiplies the submitted p_base_zaps by the account's
+#     boost_factor before crediting, and CREDITS 0 when that product exceeds
+#     CREDIT_CEILING (a soft flag that precedes a ban).
+#   - The practical daily budget is ~21 zaps; the hard server limit is ~30.
+# Size each turn so base_zaps * boost_factor lands just under the ceiling.
+CREDIT_CEILING = 3.2
+DAILY_ZAP_CAP = 21.0
+
+

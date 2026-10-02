@@ -425,3 +425,66 @@ def build_entry(
         "outputFilesCount": account.outputFilesCount,
         "promptQuality": account.promptQuality,
     }
+
+
+# ---------------------------------------------------------------------------
+# Ceiling-aware target sizing (see analysis/REFERENCE_STUDY.md)
+#
+# The server multiplies the submitted p_base_zaps by the account's
+# boost_factor before crediting, and credits 0 when the product exceeds
+# CREDIT_CEILING. So the value to SEND is  target / boost_factor, capped so the
+# sent figure itself stays under the ceiling.
+# ---------------------------------------------------------------------------
+def send_zaps_for_target(target_credited: float, boost_factor: float,
+                         ceiling: float = C.CREDIT_CEILING) -> float:
+    """p_base_zaps to submit so the credited result lands on `target_credited`.
+
+    A 5% margin is kept below the ceiling: `sent * boost` must stay strictly
+    under it, or the server credits 0 (or a negative delta) — rounding at the
+    boundary otherwise overshoots (e.g. 3.05 * 1.05 = 3.203 > 3.2).
+    """
+    boost = boost_factor or 1.0
+    safe = ceiling * 0.95
+    want = min(target_credited, safe)
+    return round(min(want, want / boost, safe) * 100) / 100
+
+
+def scale_tokens_for_zaps(
+    account: TurnAccount,
+    *,
+    platform: str,
+    model: str,
+    target_zaps: float,
+    quality: float | None = None,
+    has_non_image_attachment: bool = False,
+) -> TurnAccount:
+    """Rescale an account's token counts so its base zaps ≈ `target_zaps`.
+
+    Tokens drive zaps linearly, so scaling both input and output by
+    `target / current` moves base_zaps to the target (within rounding).
+    """
+    current = compute_zaps(
+        account.inputTokens, account.outputTokens, model, platform,
+        account.media_tokens, quality if quality is not None else account.promptQuality,
+    )
+    if has_non_image_attachment:
+        current = round2(current * C.NON_IMAGE_ATTACHMENT_MULTIPLIER)
+    if current <= 0 or target_zaps <= 0:
+        return account
+    scale = target_zaps / current
+    account.inputTokens = max(1, js_round(account.inputTokens * scale))
+    account.outputTokens = max(1, js_round(account.outputTokens * scale))
+    # Recompute the derived figures for the new token counts — the caller sends
+    # account.zaps / account.spend_usd, so they MUST reflect the scaled tokens.
+    q = quality if quality is not None else account.promptQuality
+    zaps = compute_zaps(
+        account.inputTokens, account.outputTokens, model, platform,
+        account.media_tokens, q,
+    )
+    if has_non_image_attachment:
+        zaps = round2(zaps * C.NON_IMAGE_ATTACHMENT_MULTIPLIER)
+    account.zaps = zaps
+    account.spend_usd = compute_usd_cost(
+        account.inputTokens, account.outputTokens, model
+    )["totalCost"]
+    return account

@@ -42,6 +42,16 @@ def _log(logger: LogFn | None, message: str) -> None:
         logger(message)
 
 
+def _emit(name: str, **data) -> None:
+    """Best-effort TUI event emit; never breaks the run."""
+    try:
+        from .tui.events import EventType, get_event_bus
+
+        get_event_bus().emit(EventType[name], **data)
+    except Exception:
+        pass
+
+
 @dataclass
 class LoopConfig:
     turns: int = 10                     # turns per account per day (<= DAILY_TURN_CAP)
@@ -108,35 +118,43 @@ class DailyLoop:
     # -- one account -------------------------------------------------------
     def run_account(self, record: AccountRecord, *, force: bool = False) -> dict:
         day = _today_utc()
+        _emit("ACCOUNT_QUEUED", email=record.email)
         if not force and self._done_today(day, record.email):
+            _emit("ACCOUNT_STAGE", email=record.email, stage="skipped")
             return {"status": "skipped", "reason": "already ran today"}
 
         client = ConsoClient(self.settings)
+        _emit("ACCOUNT_STAGE", email=record.email, stage="session")
         try:
             result = self.manager.ensure_session(record, solver=self.solver)
             client.session = result.session
         except ConsoAPIError as exc:
             client.close()
+            _emit("ACCOUNT_FAILED", email=record.email, reason=f"session: {exc}")
             return {"status": "failed", "reason": f"session: {exc}"}
 
         info: dict = {"status": "ok", "session": result.source, "zaps": 0.0}
         try:
             status = get_daily_status(client)
             if status and status.is_banned:
+                _emit("ACCOUNT_FAILED", email=record.email, reason="account_banned")
                 return {"status": "banned", "reason": "account_banned"}
             if self.config.daily_cap and status:
                 if status.effective_daily >= self.config.daily_cap:
+                    _emit("ACCOUNT_STAGE", email=record.email, stage="capped")
                     return {"status": "capped", "reason": f"daily={status.effective_daily}"}
 
             before = status.total_zaps if status else 0.0
 
             if self.config.claim_missions:
+                _emit("ACCOUNT_STAGE", email=record.email, stage="missions")
                 summary = run_earnings(client, logger=self.logger)
                 info["missions"] = summary.zaps_earned
                 before = summary.total_zaps_after or before
         finally:
             client.close()
 
+        _emit("ACCOUNT_STAGE", email=record.email, stage="farm")
         ok, farmed = farm_turns_for_account(
             self.settings, record, self.config.turns,
             solver=self.solver, store=self.store, verifier=self.verifier, logger=self.logger,
@@ -144,6 +162,7 @@ class DailyLoop:
         info["turns"] = ok
         info["zaps"] = round(info.get("zaps", 0.0) + farmed, 2)
         self._mark_done(day, record.email, info)
+        _emit("ACCOUNT_COMPLETED", email=record.email, zaps=info["zaps"], proxy=record.proxy or "")
         return info
 
     # -- full cycle --------------------------------------------------------

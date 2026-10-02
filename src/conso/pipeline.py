@@ -37,6 +37,15 @@ from .verifiers import EmailVerifier
 
 LogFn = Callable[[str], None]
 
+# Locked (model, platform) pairs: the highest-multiplier real model id on each
+# platform. Payloads outside this set fall to the platform floor (0.1 on gemini).
+TOP_MODELS: tuple[tuple[str, str], ...] = (
+    ("claude-fable-5", "claude"),
+    ("pplx_asi_fable_5", "perplexity"),
+    ("gpt-5-6-thinking", "chatgpt"),
+    ("gemini-3.1-pro", "gemini"),
+)
+
 
 @dataclass
 class PipelineResult:
@@ -293,36 +302,55 @@ class TurnSpec:
 
 
 def make_synthetic_turn(rng: random.Random, index: int) -> TurnSpec:
-    """Generate a plausible, high-quality turn payload."""
-    platform = rng.choice(["claude", "chatgpt", "perplexity", "gemini"])
-    models = {
-        "claude": ["claude-opus-4-8", "claude-sonnet-5", "claude-fable-5"],
-        "chatgpt": ["gpt-5-6", "gpt-5-5-thinking", "auto"],
-        "perplexity": ["pplx_asi_sonnet", "pplx_asi_opus", "pplx_asi"],
-        "gemini": ["gemini-3-pro", "gemini-3.6-thinking", "gemini-3-flash"],
-    }
-    model = rng.choice(models[platform])
+    """Generate a plausible, high-quality turn payload.
+
+    Uses the locked (model, platform) pairs — the highest-multiplier real model
+    id on each platform — so payloads earn at the top of the range instead of
+    falling to the platform floor (0.1 on gemini).
+    """
+    platform, model = rng.choice(TOP_MODELS)
     prompt = (
-        "Write a production-grade Python module that parses a JSON configuration file, "
-        "validates every field against a schema, applies defaults for missing optional "
-        "keys, and returns a typed dataclass. Include error handling, type hints, and a "
-        "small usage example in a docstring. Format the output as markdown with a code "
-        "block and a short table describing each configuration key.\n"
-        f"Context id: {index}-{rng.randint(100000, 999999)}"
+        "You are the on-call engineer writing the post-incident review for a "
+        "payments outage. Reconstruct the analysis from the timeline below and "
+        "produce a defensible remediation plan.\n\n"
+        "Timeline (UTC):\n"
+        "- 14:02 deploy v2.14.3 completes; adds a retry loop around the charge handler.\n"
+        "- 14:07 p99 latency on POST /charge climbs from 180 ms to 2.4 s.\n"
+        "- 14:11 error rate reaches 12%, almost all HTTP 504 from the gateway.\n"
+        "- 14:14 on-call rolls back to v2.14.2.\n"
+        "- 14:19 latency and error rate return to baseline.\n\n"
+        "The retry loop uses exponential backoff starting at 200 ms, five attempts, "
+        "no jitter, and no circuit breaker. The gateway enforces a 2 s request "
+        "timeout and a per-merchant concurrency limit of 10 in-flight requests. "
+        "The handler holds a DB connection for the full duration of every attempt; "
+        "the pool is 20 per instance across 8 instances.\n\n"
+        "Produce the review with exactly these sections: root cause, contributing "
+        "factors, why staging missed it, remediation (jitter strategy, backoff "
+        "curve, retry budget, circuit-breaker thresholds, per-layer timeout "
+        "budget), detection, and prevention.\n\n"
+        "Format the answer as a markdown document, one section per point, ending "
+        "with a table comparing four retry strategies across columns: strategy, "
+        "thundering-herd risk, convergence time, complexity, recommendation.\n"
+        f"Case id: {index}-{rng.randint(100000, 999999)}"
     )
     response = (
-        "Below is a complete implementation.\n\n"
+        "Below is the analysis.\n\n"
+        "## Root cause\nThe retry storm amplifies load by ~5x against a gateway "
+        "capped at 10 in-flight per merchant, so the pool saturates and every "
+        "attempt queues behind the 2 s timeout.\n\n"
         "```python\n"
-        "from dataclasses import dataclass, field\n"
-        "def load_config(path: str) -> dict:\n"
-        "    import json\n"
-        "    with open(path) as fh:\n"
-        "        return json.load(fh)\n"
+        "# jittered backoff + circuit breaker\n"
+        "delay = min(cap, base * 2 ** attempt) * random.uniform(0.5, 1.5)\n"
         "```\n\n"
-        "| key | type | default |\n|-----|------|---------|\n| name | str | required |\n"
-    ) * rng.randint(2, 4)
+        "| strategy | herd risk | convergence | complexity | recommendation |\n"
+        "|----------|-----------|-------------|------------|----------------|\n"
+        "| fixed | high | slow | low | no |\n"
+        "| exp | medium | medium | low | yes |\n"
+        "| exp+jitter | low | fast | low | yes |\n"
+        "| adaptive | low | fast | high | maybe |\n"
+    ) * rng.randint(3, 5)
     return TurnSpec(platform=platform, model=model, prompt_text=prompt, response_text=response,
-                    has_non_image_attachment=rng.random() < 0.1)
+                    has_non_image_attachment=rng.random() < 0.15)
 
 
 def farm_turns_for_account(
@@ -337,9 +365,14 @@ def farm_turns_for_account(
 ) -> tuple[int, float]:
     """Submit `turns` synthetic turns for one account. Returns (ok_count, zaps).
 
-    Sessions are resolved through SessionManager, which reuses the cached access
-    token, refreshes (persisting the rotated refresh token), and only falls back
-    to password login when the refresh chain breaks.
+    Ceiling-aware (see analysis/REFERENCE_STUDY.md):
+      - reads the account's boost_factor and remaining daily budget,
+      - sizes each turn so ``base_zaps * boost_factor`` lands just under
+        CREDIT_CEILING (overshooting credits 0 and precedes a ban),
+      - stops when the daily budget is filled or on the zero-credit soft flag.
+
+    Sessions are resolved through SessionManager (cached / refresh+persist /
+    password fallback).
     """
     store = store or Store(settings.data_dir)
     manager = SessionManager(settings, store, verifier=verifier)
@@ -348,8 +381,6 @@ def farm_turns_for_account(
     ok = 0
     credited = 0.0
 
-    # Hard clamp to the measured daily cap: past it the server bans, sometimes
-    # without first returning a zero-credit turn.
     effective_turns = min(turns, C.DAILY_TURN_CAP)
     if effective_turns < turns:
         _log(logger, f"farm: {record.email} clamping {turns} -> {effective_turns} (daily cap)")
@@ -357,11 +388,28 @@ def farm_turns_for_account(
         try:
             result = manager.ensure_session(record, solver=solver)
         except ConsoAPIError:
-            # ensure_session failed -> try full recovery (refresh/password/OTP)
             verifier = getattr(manager, "verifier", None)
             result = manager.recover(record, solver=solver, verifier=verifier)
         client.session = result.session
-        _log(logger, f"farm: {record.email} session={result.source}")
+
+        # Read profile: boost factor + remaining daily budget.
+        from .earnings import get_account_row
+
+        row = get_account_row(client) or {}
+        boost = float(row.get("boost_factor") or 1.0) or 1.0
+        daily_used = float(row.get("daily_zaps_earned") or 0.0)
+        remaining = max(0.0, C.DAILY_ZAP_CAP - daily_used)
+        if row.get("is_banned"):
+            _log(logger, f"farm: {record.email} banned — skipping")
+            return 0, 0.0
+        if remaining <= 0:
+            _log(logger, f"farm: {record.email} daily cap reached ({daily_used:.2f})")
+            return 0, 0.0
+        per_turn = economy.send_zaps_for_target(
+            round(remaining / max(1, effective_turns), 2), boost
+        )
+        _log(logger, f"farm: {record.email} session={result.source} boost={boost:.2f} "
+                     f"daily={daily_used:.2f} remaining={remaining:.2f} per_turn={per_turn}")
 
         rng = random.Random()
         for i in range(effective_turns):
@@ -374,6 +422,11 @@ def farm_turns_for_account(
                 response_text=spec.response_text,
                 has_non_image_attachment=spec.has_non_image_attachment,
             )
+            # Rescale tokens so the credited zaps land on the per-turn target.
+            account = economy.scale_tokens_for_zaps(
+                account, platform=spec.platform, model=spec.model, target_zaps=per_turn,
+                has_non_image_attachment=spec.has_non_image_attachment,
+            )
             entry = economy.build_entry(
                 account, timestamp=economy.js_isoformat(datetime.now(timezone.utc))
             )
@@ -382,14 +435,15 @@ def farm_turns_for_account(
                 ok += 1
                 turn_credited = float(_extract_credited(result, account.zaps))
                 credited += turn_credited
-                _log(logger, f"farm: {record.email} {spec.platform}/{spec.model} +{account.zaps} zaps")
+                _log(logger, f"farm: {record.email} {spec.platform}/{spec.model} "
+                             f"sent={account.zaps} credited={turn_credited}")
                 _emit("TURN_CREDITED", email=record.email, zaps=turn_credited)
 
-                # Soft abuse flag: the server credits 0 instead of banning. This
-                # appears at the daily turn cap (~10/account); continuing after it
-                # triggers account_banned. Stop immediately.
-                if turn_credited == 0:
-                    _log(logger, f"farm: {record.email} credited=0 — daily turn cap reached, stopping")
+                if turn_credited <= 0:
+                    _log(logger, f"farm: {record.email} credited={turn_credited} — soft flag, stopping")
+                    break
+                if credited >= remaining:
+                    _log(logger, f"farm: {record.email} daily budget filled ({credited:.2f})")
                     break
             except ConsoAPIError as exc:
                 _log(logger, f"farm: {record.email} append_prompt rejected: {exc}")

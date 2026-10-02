@@ -479,6 +479,51 @@ def doctor() -> None:
          f"proxy={'yes' if settings.proxy.urls else 'no'}")
 
 
+@app.command()
+def proxies(
+    file: str = typer.Option("", help="Proxy list file (default: SOLVER_PROXY_FILE)."),
+    limit: int = typer.Option(0, help="Test only the first N (0 = all)."),
+) -> None:
+    """Health-check a proxy list (for the solver sidecar)."""
+    import os
+    from concurrent.futures import ThreadPoolExecutor
+
+    from .captcha import _load_proxies
+
+    settings = Settings.from_env()
+    path = file or os.environ.get("SOLVER_PROXY_FILE", "")
+    pool = _load_proxies(path)
+    if not pool:
+        _log(f"proxies: no list at {path!r}")
+        raise typer.Exit(code=1)
+    if limit:
+        pool = pool[:limit]
+    transport = Transport(settings)
+    _log(f"proxies: testing {len(pool)} from {path}")
+
+    def check(proxy: str) -> tuple[str, bool, str]:
+        try:
+            resp = transport._session.get(
+                "https://api.ipify.org?format=json",
+                proxies={"http": proxy, "https": proxy},
+                impersonate=settings.impersonate, timeout=12,
+            )
+            ok = resp.status_code == 200
+            return proxy, ok, (resp.text[:40] if ok else f"http {resp.status_code}")
+        except Exception as exc:  # noqa: BLE001
+            return proxy, False, str(exc)[:60]
+
+    live = 0
+    with ThreadPoolExecutor(max_workers=min(20, len(pool))) as pool_exec:
+        for proxy, ok, note in pool_exec.map(check, pool):
+            host = proxy.split("@")[-1]
+            if ok:
+                live += 1
+                _log(f"  LIVE {host} {note}")
+    _log(f"proxies: {live}/{len(pool)} live")
+    transport.close()
+
+
 def main() -> None:
     try:
         app()

@@ -173,6 +173,8 @@ class SolverServiceSolver:
         verify_url: str = "",
         verify_payload: dict | None = None,
         retries: int = 8,
+        proxy_file: str = "",
+        proxies: list[str] | None = None,
     ) -> None:
         self.transport = transport
         self.base_url = base_url.rstrip("/")
@@ -182,6 +184,19 @@ class SolverServiceSolver:
         self.verify_url = verify_url
         self.verify_payload = verify_payload
         self.retries = retries
+        # Rotating proxy list for the sidecar's per-request `proxy` field.
+        self._proxies = list(proxies or [])
+        if proxy_file and not self._proxies:
+            self._proxies = _load_proxies(proxy_file)
+        self._proxy_idx = 0
+
+    def _next_proxy(self) -> str:
+        """Round-robin the proxy list; '' means solve directly."""
+        if not self._proxies:
+            return ""
+        proxy = self._proxies[self._proxy_idx % len(self._proxies)]
+        self._proxy_idx += 1
+        return proxy
 
     def _headers(self) -> dict[str, str]:
         headers = {"Content-Type": "application/json"}
@@ -212,6 +227,11 @@ class SolverServiceSolver:
                 body["url"] = self._page_url(page_url)
             else:
                 body["url"] = page_url
+            # Rotate through the proxy pool (per-request on the sidecar). After
+            # exhausting the pool once, fall back to a direct solve.
+            proxy = self._next_proxy()
+            if proxy:
+                body["proxy"] = proxy
             resp = self.transport.request(
                 "POST", f"{self.base_url}/solve", headers=self._headers(), json=body,
                 retries=0, timeout=timeout + 30,
@@ -224,7 +244,43 @@ class SolverServiceSolver:
             if token:
                 return token
             last_error = data.get("error", "no token")
+            # A proxy-related failure should not poison the whole solve: retry
+            # without a proxy so a dead/expired pool still yields a token.
+            if proxy and _proxy_failure(last_error):
+                direct = dict(body)
+                direct.pop("proxy", None)
+                dresp = self.transport.request(
+                    "POST", f"{self.base_url}/solve", headers=self._headers(), json=direct,
+                    retries=0, timeout=timeout + 30,
+                )
+                ddata = _safe_json(dresp) or {}
+                if ddata.get("token"):
+                    return ddata["token"]
         raise RuntimeError(f"turnstile solve failed after {self.retries} attempts: {last_error}")
+
+
+def _proxy_failure(error: str) -> bool:
+    """True if a solve error looks proxy-related (dead/expired/auth)."""
+    text = (error or "").lower()
+    return any(marker in text for marker in (
+        "proxy", "407", "tunnel", "err_proxy", "net::err", "econnrefused",
+        "authentication", "expired",
+    ))
+
+
+def _load_proxies(path: str) -> list[str]:
+    """Load a proxy list (one per line); strips CRLF and blanks."""
+    import os
+
+    if not path or not os.path.exists(path):
+        return []
+    out: list[str] = []
+    with open(path, "r", encoding="utf-8", errors="ignore") as fh:
+        for line in fh:
+            entry = line.strip()
+            if entry and not entry.startswith("#"):
+                out.append(entry)
+    return out
 
 
 def _safe_json(resp: Any) -> Any:
@@ -317,6 +373,7 @@ def build_solver(transport: Transport) -> CaptchaSolver:
             redirect_uri=os.environ.get("CONSO_REDIRECT_URI", CONSO_REDIRECT_URIS[0]),
             verify_url=verify_url,
             verify_payload=verify_payload,
+            proxy_file=os.environ.get("SOLVER_PROXY_FILE", ""),
         )
     if provider == "capsolver":
         key = os.environ.get("CAPSOLVER_API_KEY", "")

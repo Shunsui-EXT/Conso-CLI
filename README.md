@@ -163,6 +163,27 @@ Order matters: the extension shows the referral screen right after
 the code before onboarding (`create_consouser -> redeem_referral_code ->
 set_consoname`). Per-run override: `python main.py register 5 --referral CODE`.
 
+## Solver proxy pool
+
+The captcha sidecar accepts a per-request `proxy` field, so the solver can run
+each solve through a rotating proxy (clean IP per solve):
+
+```bash
+# .env
+SOLVER_PROXY_FILE=data/proxies.txt    # one proxy per line: http://user:pass@host:port
+```
+
+```bash
+python main.py proxies               # health-check the list
+python main.py proxies --limit 20    # test the first 20
+```
+
+`SolverServiceSolver` round-robins the list and sends `proxy` in each `/solve`
+body. If a solve fails with a proxy-looking error (407 / tunnel / expired), it
+retries that attempt **directly** (no proxy), so a dead pool never blocks a
+solve. Lines are stripped of CRLF — a trailing `\r` makes the proxy URL
+malformed and every request fails with `CONNECT tunnel failed`.
+
 ## Browser-free mode
 
 The core pipeline (`src/conso/`) is **already pure HTTP** — no Playwright,

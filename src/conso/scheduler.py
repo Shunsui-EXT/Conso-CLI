@@ -128,10 +128,18 @@ class DailyLoop:
         try:
             result = self.manager.ensure_session(record, solver=self.solver)
             client.session = result.session
-        except ConsoAPIError as exc:
-            client.close()
-            _emit("ACCOUNT_FAILED", email=record.email, reason=f"session: {exc}")
-            return {"status": "failed", "reason": f"session: {exc}"}
+        except ConsoAPIError:
+            # ensure_session exhausted cache+refresh+password -> full recovery
+            # (adds the email-OTP path, reusing the stored signup address).
+            try:
+                result = self.manager.recover(
+                    record, solver=self.solver, verifier=self.verifier
+                )
+                client.session = result.session
+            except ConsoAPIError as exc:
+                client.close()
+                _emit("ACCOUNT_FAILED", email=record.email, reason=f"session: {exc}")
+                return {"status": "failed", "reason": f"session: {exc}"}
 
         info: dict = {"status": "ok", "session": result.source, "zaps": 0.0}
         try:

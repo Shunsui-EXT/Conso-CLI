@@ -149,8 +149,10 @@ class AppState:
 
     def metrics(self) -> dict[str, Any]:
         with self._lock:
+            # total = server totals when known, else per-run credits
+            server = sum(a.total_zaps for a in self.accounts.values())
             return {
-                "zaps": self.total_zaps,
+                "zaps": server if server > 0 else self.total_zaps,
                 "turns": self.turns_ok,
                 "missions": self.missions_ok,
                 "accounts": len(self.accounts),

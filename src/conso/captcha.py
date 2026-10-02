@@ -175,6 +175,7 @@ class SolverServiceSolver:
         retries: int = 8,
         proxy_file: str = "",
         proxies: list[str] | None = None,
+        proxy_timeout: float = 45.0,
     ) -> None:
         self.transport = transport
         self.base_url = base_url.rstrip("/")
@@ -184,6 +185,10 @@ class SolverServiceSolver:
         self.verify_url = verify_url
         self.verify_payload = verify_payload
         self.retries = retries
+        # Cap for a single proxy solve attempt (proxies that cannot pass
+        # Turnstile hang until timeout; keep it short so the direct fallback
+        # runs quickly).
+        self.proxy_timeout = proxy_timeout
         # Rotating proxy list for the sidecar's per-request `proxy` field.
         self._proxies = list(proxies or [])
         if proxy_file and not self._proxies:
@@ -217,15 +222,22 @@ class SolverServiceSolver:
         last_error = ""
         for _attempt in range(1, self.retries + 1):
             proxy = self._next_proxy()
-            token, err = self._solve_once(sitekey, page_url, timeout, proxy)
-            if token:
-                return token
-            last_error = err
-            # A proxy attempt that fails for ANY reason falls back to a direct
-            # solve: datacenter proxies routinely break the Turnstile challenge
-            # (harder challenge on hosting IPs) or drop the socket entirely
-            # (net::ERR_SOCKET_NOT_CONNECTED), never returning a token.
             if proxy:
+                # Give the proxy a short leash: proxies that cannot pass
+                # Turnstile hang until the full timeout, so cap the proxy
+                # attempt and fall back to a direct solve quickly.
+                token, err = self._solve_once(
+                    sitekey, page_url, min(timeout, self.proxy_timeout), proxy
+                )
+                last_error = err
+                if token:
+                    return token
+                # Fall back to a direct solve for this attempt.
+                token, err = self._solve_once(sitekey, page_url, timeout, "")
+                if token:
+                    return token
+                last_error = err
+            else:
                 token, err = self._solve_once(sitekey, page_url, timeout, "")
                 if token:
                     return token

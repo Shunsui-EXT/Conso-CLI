@@ -81,6 +81,7 @@ class DailyLoop:
         self.logger = logger
         self.verifier = verifier
         self.manager = SessionManager(settings, store, verifier=verifier)
+        self.only_email = ""  # optional filter: run a single account
         self._stop = threading.Event()
 
     def stop(self) -> None:
@@ -152,6 +153,8 @@ class DailyLoop:
             if self._stop.is_set():
                 break
             if record.status not in ("active", "farmed"):
+                continue
+            if self.only_email and record.email != self.only_email:
                 continue
             try:
                 info = self.run_account(record, force=force)

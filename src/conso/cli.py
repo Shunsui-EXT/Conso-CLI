@@ -385,6 +385,7 @@ def loop(
     force: bool = typer.Option(False, "--force", help="Re-run accounts already done today."),
     no_missions: bool = typer.Option(False, "--no-missions", help="Skip mission claims."),
     daily_cap: float = typer.Option(0.0, help="Stop an account at this daily zaps (0 = off)."),
+    email: str = typer.Option("", help="Only run this account (empty = all)."),
 ) -> None:
     """Run the daily earn cycle (missions + turns) on a schedule."""
     import signal
@@ -401,6 +402,8 @@ def loop(
     )
     runner = DailyLoop(settings, store, config=config, solver=solver,
                        verifier=build_verifier(settings), logger=_log)
+    if email:
+        runner.only_email = email
 
     def _handle(signum, frame):  # noqa: ANN001, ARG001
         _log("loop: stop requested, finishing current account...")

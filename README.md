@@ -25,26 +25,40 @@ exactly. Full reverse-engineering write-up: [`analysis/RE_REPORT.md`](analysis/R
 | **Automate** | `loop` / `pipeline` | Recurring daily cycle or a one-shot register→earn chain |
 | **Monitor** | `dashboard` | Textual TUI: live batch, accounts, logs |
 
-## Quick start
+## From clone to ready (step by step)
 
 ```bash
+# 1. Clone
+git clone <your-repo-url> conso && cd conso
+
+# 2. Virtualenv + deps
 python3 -m venv .venv
-. .venv/bin/activate
+. .venv/bin/activate            # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-cp .env.example .env          # then edit (see Configuration)
 
-# (optional) download the extension for local analysis
-bash scripts/fetch_extension.sh
+# 3. Captcha solver (choose ONE)
+#    a) internal Camoufox (recommended, no sidecar):
+pip install 'camoufox[geoip]>=0.4.0' playwright==1.60
+python -m camoufox fetch
+#    b) OR the CloakBrowser sidecar:
+# bash scripts/setup_solver.sh && bash scripts/start_solver.sh
 
-# Pre-flight: transport, backend reachability, captcha posture
-python main.py test
+# 4. Config
+cp .env.example .env            # defaults already work (temptf + internal solver)
 
-# One account, fully provisioned, then earn
+# 5. Verify everything is wired
+python main.py doctor           # solver mode + browser-free report
+python main.py test             # backend reachability + economy sanity
+
+# 6. First account
 python main.py pipeline --register 1 --earn
-
-# Interactive TUI
-python main.py dashboard
 ```
+
+Then either use the CLI (`python main.py pipeline ...`) or the TUI
+(`python main.py dashboard`).
+
+> `main.py` adds `src/` to `sys.path` itself, so no `PYTHONPATH` is needed.
+> (`pip install -e .` also works and gives you a `conso` console script.)
 
 ## Requirements
 

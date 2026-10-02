@@ -252,6 +252,8 @@ class RunOptions:
 class MenuScreen(ModalScreen[RunOptions | None]):
     """Start menu: Register / Daily task / Monitor, with referral input."""
 
+    BINDINGS = [Binding("escape", "dismiss", "Close")]
+
     CSS = """
     MenuScreen { align: center middle; background: #0d1117cc; }
     #menu { width: 68; height: auto; max-height: 90%; border: round #58a6ff;

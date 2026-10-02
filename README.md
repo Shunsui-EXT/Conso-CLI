@@ -128,7 +128,31 @@ data/                         accounts.json / accounts.csv / state.json (gitigno
 python main.py dashboard
 ```
 
-Opens a Textual control center. On start it shows a **menu**; pick an action:
+A Textual control center with a branded ASCII header, an adaptive Overview, a
+per-account table, and a live log stream.
+
+![Idle — portfolio health](docs/img/tui-idle.png)
+
+![Running — live monitor](docs/img/tui-running.png)
+
+![Accounts](docs/img/tui-accounts.png)
+
+**Overview is adaptive:**
+
+- **Idle** — portfolio health: store zaps, account counts, average daily
+  (cap utilization bar vs 21), average boost/streak, banned count, top-5
+  accounts, and a top-zaps sparkline.
+- **Running** — live monitor: status + ETA, run zaps / done / turns / rate /
+  failed / missions, a progress bar, a **zaps/min sparkline**, a per-platform
+  breakdown, and a per-run error summary.
+
+**Accounts** — `ST · EMAIL · STAGE · TOTAL · TODAY · STREAK · BOOST · PROXY ·
+NOTE`, with a filter box; failures and running accounts sort first; server
+stats refresh every 30s (or press `p`).
+
+### Menu
+
+On start a menu appears; pick an action:
 
 ```
 CONSO FARM — pilih aksi
@@ -141,32 +165,19 @@ CONSO FARM — pilih aksi
   Referral code (kosong = dari .env): [ ]
   Only-new (earn akun baru saja)? 1=ya / 0=semua: [0]
 
-  [ Register ]   [ Daily task ]   [ Monitor ]
+  [ Register ]  [ Daily task ]  [ Monitor ]  [ Stop ]
 ```
 
-- **Register** — provisions N new accounts, then earns for them (background
-  thread; Overview updates live). Set a **referral code** here per run, or leave
-  it blank to use `DEFAULT_REFERRAL_CODE` from `.env`.
-- **Daily task** — runs the earn cycle (missions + turns) for existing accounts.
-- **Monitor** — just watch, no run started.
+### Keys
 
-**Views:**
-
-- **Overview** — status, a progress bar, per-status account counts
-  (active/running/failed/pending), zaps, rate/min, and the active
-  solver/referral.
-- **Accounts** — filterable table (type to filter by email/status); failures and
-  running accounts are shown first.
-- **Logs** — realtime event stream.
-
-**Keys:**
-
-| Key | View |
+| Key | Action |
 |---|---|
-| `1` | Overview |
+| `1` | Overview (idle/running) |
 | `2` | Accounts |
 | `l` | Logs |
-| `m` | Menu (start another run) |
+| `m` | Menu (Register / Daily / Monitor / Stop) |
+| `p` | Refresh server stats |
+| `x` | Stop the active run (graceful) |
 | `q` | Quit |
 
 The TUI and the CLI share one event bus: a `python main.py pipeline ...` run in

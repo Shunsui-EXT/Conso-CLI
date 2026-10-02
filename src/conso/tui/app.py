@@ -112,7 +112,7 @@ class AccountsView(Vertical):
 
     def on_mount(self) -> None:
         self.query_one("#acct-table", DataTable).add_columns(
-            "ST", "EMAIL", "STAGE", "ZAPS", "PROXY", "NOTE"
+            "ST", "EMAIL", "STAGE", "TOTAL", "TODAY", "STREAK", "BOOST", "PROXY", "NOTE"
         )
 
     def on_input_changed(self, event: Input.Changed) -> None:
@@ -129,17 +129,21 @@ class AccountsView(Vertical):
         if self._filter:
             rows = [a for a in rows
                     if self._filter in a.email.lower() or self._filter in a.status.lower()]
-        # show failures first, then running, then the rest
         order = {"failed": 0, "running": 1, "active": 2, "pending": 3}
         rows.sort(key=lambda a: order.get(a.status, 9))
         for a in rows:
+            st_icon = Sym.FAILED if a.banned else icon.get(a.status, Sym.PENDING)
+            note = a.note[:26] if a.note else ("BANNED" if a.banned else "—")
             table.add_row(
-                icon.get(a.status, Sym.PENDING),
+                st_icon,
                 mask_email(a.email),
                 a.stage or "—",
-                f"{a.zaps:.2f}",
+                f"{a.total_zaps:.1f}",
+                f"{a.daily_zaps:.1f}",
+                str(a.streak),
+                f"{a.boost:.2f}",
                 (a.proxy.split("@")[-1] if a.proxy else "—"),
-                a.note[:32] if a.note else "—",
+                note,
             )
 
 
@@ -253,6 +257,7 @@ class ConsoTUI(App):
         Binding("2", "show('accounts')", "Accounts", priority=True),
         Binding("l", "show('logs')", "Logs", priority=True),
         Binding("m", "menu", "Menu", priority=True),
+        Binding("p", "poll_stats", "Refresh stats", priority=True),
         Binding("q", "quit", "Quit", priority=True),
     ]
 
@@ -275,7 +280,26 @@ class ConsoTUI(App):
         except Exception:
             pass
         self.set_interval(1.0, self._tick)
+        # poll server stats every 30s in the background (never blocks the UI)
+        self.set_interval(30.0, self._poll_stats_bg)
         self.call_after_refresh(self.action_menu)
+        self.call_after_refresh(self._poll_stats_bg)
+
+    def action_poll_stats(self) -> None:
+        self._poll_stats_bg()
+
+    def _poll_stats_bg(self) -> None:
+        import threading
+
+        from .state import get_app_state as _gas
+
+        def work() -> None:
+            try:
+                _gas().poll_stats(workers=8)
+            except Exception:
+                pass
+
+        threading.Thread(target=work, daemon=True).start()
 
     def _apply_visibility(self) -> None:
         for name in ("overview", "accounts", "logs"):

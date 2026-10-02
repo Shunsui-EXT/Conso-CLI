@@ -30,9 +30,15 @@ class AccountRow:
     email: str
     status: str = "pending"     # pending | running | active | failed
     stage: str = ""             # create/otp/referral/consoname/earn
-    zaps: float = 0.0
+    zaps: float = 0.0           # zaps earned this run
     note: str = ""
     proxy: str = ""
+    # server-side stats (refreshed on demand)
+    total_zaps: float = 0.0
+    daily_zaps: float = 0.0
+    streak: int = 0
+    boost: float = 1.0
+    banned: bool = False
 
 
 @dataclass
@@ -160,10 +166,11 @@ class AppState:
                         status=rec.status if rec.status in ("active", "failed") else "pending",
                         stage="idle",
                         zaps=float(rec.total_zaps or 0),
+                        total_zaps=float(rec.total_zaps or 0),
                         proxy=rec.proxy or "",
                         note=rec.note or "",
                     )
-            self.total_zaps = sum(a.zaps for a in self.accounts.values())
+            self.total_zaps = sum(a.total_zaps or a.zaps for a in self.accounts.values())
 
     def account_counts(self) -> dict[str, int]:
         with self._lock:
@@ -172,6 +179,63 @@ class AppState:
                 counts[a.status] = counts.get(a.status, 0) + 1
             counts["total"] = len(self.accounts)
             return counts
+
+    def update_stats(self, email: str, **stats: Any) -> None:
+        with self._lock:
+            row = self.accounts.get(email)
+            if row is None:
+                return
+            for key in ("total_zaps", "daily_zaps", "streak", "boost", "banned"):
+                if key in stats:
+                    setattr(row, key, stats[key])
+
+    def poll_stats(self, max_accounts: int = 0, workers: int = 8) -> int:
+        """Fetch server stats (total/daily/streak/boost/banned) for accounts.
+
+        Bounded to `max_accounts` (0 = all) and run in a small thread pool so the
+        UI is never blocked. Returns how many rows were updated.
+        """
+        from concurrent.futures import ThreadPoolExecutor
+
+        from ..client import ConsoClient
+        from ..config import Settings
+        from ..earnings import get_account_row
+        from ..session import SessionManager
+        from ..storage import Store
+
+        settings = Settings.from_env()
+        store = Store(settings.data_dir)
+        recs = [r for r in store.all() if r.email]
+        if max_accounts:
+            recs = recs[:max_accounts]
+        manager = SessionManager(settings, store)
+        updated = 0
+
+        def _one(rec) -> None:
+            nonlocal updated
+            client = ConsoClient(settings)
+            try:
+                client.session = manager.ensure_session(rec).session
+                row = get_account_row(client)
+                if not row:
+                    return
+                self.update_stats(
+                    rec.email,
+                    total_zaps=float(row.get("total_zaps") or 0),
+                    daily_zaps=float(row.get("daily_zaps_earned") or 0),
+                    streak=int(row.get("current_streak") or 0),
+                    boost=float(row.get("boost_factor") or 1.0),
+                    banned=bool(row.get("is_banned")),
+                )
+                updated += 1
+            except Exception:
+                pass
+            finally:
+                client.close()
+
+        with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+            list(pool.map(_one, recs))
+        return updated
 
 
 _state: AppState | None = None

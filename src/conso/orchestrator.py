@@ -47,6 +47,8 @@ class PipelineConfig:
     referral: str = ""
     workers: int = 1               # farm parallelism
     daily_cap: float = 0.0
+    only_new: bool = False         # earn only the accounts registered this run
+    solver_concurrent: int = 0     # 0 = inherit SOLVER_MAX_CONCURRENT
 
 
 class Orchestrator:
@@ -66,14 +68,20 @@ class Orchestrator:
     # -- phases ------------------------------------------------------------
     def run(self) -> dict:
         summary: dict = {"registered": 0, "active": 0, "earned_zaps": 0.0}
+        if self.config.solver_concurrent:
+            import os
+            os.environ["SOLVER_MAX_CONCURRENT"] = str(self.config.solver_concurrent)
         solver = build_solver(Transport(self.settings))
         verifier = build_verifier(self.settings)
 
+        new_emails: set[str] = set()
         if self.config.register_count > 0 and not self._stop.is_set():
-            summary.update(self._phase_register(solver, verifier))
+            reg = self._phase_register(solver, verifier)
+            summary.update(reg)
+            new_emails = reg.get("emails", set())
 
         if self.config.earn and not self._stop.is_set():
-            summary["earned_zaps"] += self._phase_earn(solver, verifier)
+            summary["earned_zaps"] += self._phase_earn(solver, verifier, only=new_emails)
 
         if self.config.loop and not self._stop.is_set():
             self._phase_loop(solver, verifier)
@@ -90,18 +98,27 @@ class Orchestrator:
             verifier=verifier, solver=solver, logger=self.logger,
         )
         active = sum(1 for r in results if r.status == "active")
+        emails = {r.email for r in results if r.status == "active"}
         self._log(f"pipeline: register done {active}/{len(results)} active")
-        return {"registered": len(results), "active": active}
+        return {"registered": len(results), "active": active, "emails": emails}
 
-    def _phase_earn(self, solver, verifier) -> float:
-        """Earn for accounts that have not earned today (uses DailyLoop ledger)."""
+    def _phase_earn(self, solver, verifier, *, only: set[str] | None = None) -> float:
+        """Earn for accounts that have not earned today (uses DailyLoop ledger).
+
+        `only` (when non-empty) restricts earning to those emails — used by
+        --only-new so a run does not re-farm the whole store.
+        """
         runner = DailyLoop(
             self.settings, self.store,
             config=LoopConfig(turns=self.config.turns, parallel_workers=self.config.workers,
                               daily_cap=self.config.daily_cap, max_cycles=1),
             solver=solver, verifier=verifier, logger=self.logger,
         )
-        self._log("pipeline: earning (missions + turns)")
+        if only:
+            runner.only_emails = set(only)
+            self._log(f"pipeline: earning {len(only)} new account(s)")
+        else:
+            self._log("pipeline: earning (missions + turns)")
         result = runner.run_cycle()
         self._log(f"pipeline: earn done +{round(result.zaps, 2)} zaps")
         return result.zaps

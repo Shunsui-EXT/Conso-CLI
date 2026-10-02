@@ -120,6 +120,8 @@ class RunOptions:
     turns: int = 10
     workers: int = 1
     earn: bool = True
+    only_new: bool = False
+    solver_concurrent: int = 0
 
 
 class MenuScreen(ModalScreen[RunOptions | None]):
@@ -142,8 +144,12 @@ class MenuScreen(ModalScreen[RunOptions | None]):
             yield Input(value="8", id="count", type="integer")
             yield Label("Turns per akun:")
             yield Input(value="10", id="turns", type="integer")
-            yield Label("Farm workers (daily):")
+            yield Label("Farm workers (paralel):")
             yield Input(value="2", id="workers", type="integer")
+            yield Label("Solver concurrent (0=env):")
+            yield Input(value="0", id="solver", type="integer")
+            yield Label("Only-new (earn akun baru saja)? ketik 1=ya / 0=semua:")
+            yield Input(value="0", id="onlynew", type="integer")
             with Horizontal():
                 yield Button("Register", id="btn-reg", variant="primary")
                 yield Button("Daily task", id="btn-daily", variant="success")
@@ -156,8 +162,14 @@ class MenuScreen(ModalScreen[RunOptions | None]):
             except ValueError:
                 return default
 
-        return RunOptions(kind=kind, count=_int("count", 8), turns=_int("turns", 10),
-                          workers=_int("workers", 2))
+        return RunOptions(
+            kind=kind,
+            count=_int("count", 8),
+            turns=_int("turns", 10),
+            workers=max(1, _int("workers", 2)),
+            solver_concurrent=_int("solver", 0),
+            only_new=_int("onlynew", 0) == 1,
+        )
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         kind = {"btn-reg": "register", "btn-daily": "daily", "btn-monitor": "monitor"}[event.button.id]
@@ -228,7 +240,9 @@ class ConsoTUI(App):
         from ..config import Settings
 
         settings = Settings.from_env()
-        cfg = PipelineConfig(register_count=opts.count, earn=opts.earn, turns=opts.turns)
+        cfg = PipelineConfig(register_count=opts.count, earn=opts.earn, turns=opts.turns,
+                             workers=opts.workers, only_new=opts.only_new,
+                             solver_concurrent=opts.solver_concurrent)
 
         def work() -> None:
             Orchestrator(settings, config=cfg, logger=self._log_to_bus).run()

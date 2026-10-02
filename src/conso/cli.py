@@ -421,7 +421,7 @@ def loop(
     runner = DailyLoop(settings, store, config=config, solver=solver,
                        verifier=build_verifier(settings), logger=_log)
     if email:
-        runner.only_email = email
+        runner.only_emails = {email}
 
     def _handle(signum, frame):  # noqa: ANN001, ARG001
         _log("loop: stop requested, finishing current account...")
@@ -554,8 +554,10 @@ def pipeline(
     interval_hours: float = typer.Option(24.0, help="Daily-loop interval (hours)."),
     cycles: int = typer.Option(0, help="Daily-loop cycles (0 = forever)."),
     referral: str = typer.Option("", help="Referral code (default from .env)."),
-    workers: int = typer.Option(1, help="Farm parallelism."),
+    workers: int = typer.Option(1, help="Farm parallelism (accounts earned concurrently)."),
     daily_cap: float = typer.Option(0.0, help="Stop an account at this daily zaps."),
+    only_new: bool = typer.Option(False, "--only-new", help="Earn only the accounts registered this run."),
+    solver_concurrent: int = typer.Option(0, help="Solver concurrency (0 = from .env)."),
 ) -> None:
     """Full pipeline: register -> earn -> daily loop (one entry point)."""
     import signal
@@ -566,7 +568,8 @@ def pipeline(
     config = PipelineConfig(
         register_count=register, earn=earn, turns=turns, loop=loop,
         interval_hours=interval_hours, loop_cycles=cycles, referral=referral,
-        workers=workers, daily_cap=daily_cap,
+        workers=workers, daily_cap=daily_cap, only_new=only_new,
+        solver_concurrent=solver_concurrent,
     )
     orch = Orchestrator(settings, config=config, logger=_log)
 

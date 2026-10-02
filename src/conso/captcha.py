@@ -412,7 +412,7 @@ class InternalSolverAdapter:
     """
 
     def __init__(self, *, headless: bool = True, timeout: float = 120.0,
-                 real_page: bool = True) -> None:
+                 real_page: bool = False) -> None:
         from .internal_solver import get_default_solver
 
         self._get = get_default_solver

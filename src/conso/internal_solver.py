@@ -21,6 +21,7 @@ whitelisted redirect_uri, which is the path that produced accepted tokens.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import threading
 import time
@@ -41,13 +42,15 @@ except Exception:
 CONSO_REDIRECT_URI = "https://bjibbmkefnaamkenamdppfengeepadpi.chromiumapp.org/"
 CONSO_VERIFY_URL = "https://www.conso.xyz/verify-human"
 
-# Stub page (used only for non-real-page solves). Kept for parity with GROK.
-STUB_HTML = (
-    '<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">'
-    '<script src="https://challenges.cloudflare.com/turnstile/v0/api.js'
-    '?onload=onloadTurnstileCallback" async defer></script>'
-    '</head><body><!-- cf turnstile --><p id="ip-display"></p></body></html>'
-)
+# Stub page that explicitly calls turnstile.render() from the api.js onload
+# callback. This is the path that actually produces a token in Camoufox:
+# relying on the real page's Next.js <Script> fails (widget renders before
+# api.js is ready / CSP blocks the inline render), but an explicit onload
+# callback renders reliably.
+STUB_HTML = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<script src="https://challenges.cloudflare.com/turnstile/v0/api.js?onload=__consoCb" async defer></script>
+<script>function __consoCb(){window.turnstile.render("#cf-slot", __CONSO_OPTS__);}</script>
+</head><body><div id="cf-slot"></div><p id="ip-display"></p></body></html>"""
 
 
 class InternalSolverError(RuntimeError):
@@ -202,16 +205,12 @@ class InternalTurnstileSolver:
 
         async with self._sem:
             target = url if url.endswith("/") else url + "/"
-            attributes = [f'data-sitekey="{sitekey}"']
+            opts: dict[str, Any] = {"sitekey": sitekey}
             if action:
-                attributes.append(f'data-action="{action}"')
+                opts["action"] = action
             if cdata:
-                attributes.append(f'data-cdata="{cdata}"')
-            widget = (
-                f'<div class="cf-turnstile" style="background:white;width:70px;" '
-                f'{" ".join(attributes)}></div>'
-            )
-            page_data = STUB_HTML.replace("<!-- cf turnstile -->", widget)
+                opts["cdata"] = cdata
+            page_data = STUB_HTML.replace("__CONSO_OPTS__", json.dumps(opts))
             deadline = time.monotonic() + timeout_seconds
 
             proxy_cfg = self._proxy_config(proxy or self.config.proxy)
@@ -223,31 +222,40 @@ class InternalTurnstileSolver:
             try:
                 page = await ctx.new_page()
                 if real_page:
-                    # Load the REAL page (Conso rejects stub tokens).
+                    # Load the real page, then inject an explicit render call so
+                    # the widget is driven by our onload callback (the page's own
+                    # Next.js <Script> render is unreliable in Camoufox).
                     await page.goto(target, wait_until="domcontentloaded", timeout=30_000)
+                    await page.evaluate(
+                        """(opts) => new Promise((resolve) => {
+                            const go = () => { window.turnstile.render("#cf-slot", opts); resolve(); };
+                            if (window.turnstile) { go(); return; }
+                            const s = document.createElement('script');
+                            s.src = "https://challenges.cloudflare.com/turnstile/v0/api.js?onload=__consoCb2";
+                            window.__consoCb2 = go;
+                            document.head.appendChild(s);
+                        })""",
+                        opts,
+                    )
+                    try:
+                        await page.evaluate(
+                            """() => { if (!document.querySelector('#cf-slot')) {
+                                const d = document.createElement('div'); d.id = 'cf-slot';
+                                document.body.prepend(d); } }"""
+                        )
+                    except Exception:
+                        pass
                 else:
                     await page.route(target, lambda route: route.fulfill(body=page_data, status=200))
                     await page.goto(target, wait_until="domcontentloaded", timeout=25_000)
 
                 while time.monotonic() < deadline:
                     try:
-                        token = await page.input_value("[name=cf-turnstile-response]", timeout=300)
+                        token = await page.evaluate(
+                            "() => { const e=document.querySelector('[name=cf-turnstile-response]'); return e?e.value:'' }"
+                        )
                         if token and len(token) > 50:
                             return token
-                        # Click the widget checkbox (page-level, humanized if avail).
-                        try:
-                            await page.locator("//div[@class='cf-turnstile']").click(timeout=500)
-                        except Exception:
-                            pass
-                        for fr in page.frames:
-                            if "challenges.cloudflare.com" in (fr.url or ""):
-                                try:
-                                    box = await (await fr.frame_element()).bounding_box()
-                                    if box and box["width"] >= 20:
-                                        await page.mouse.click(box["x"] + 30, box["y"] + box["height"] / 2)
-                                except Exception:
-                                    pass
-                                break
                     except Exception:
                         pass
                     await asyncio.sleep(0.3)
@@ -270,7 +278,7 @@ class InternalTurnstileSolver:
         cdata: str | None = None,
         timeout_seconds: int | None = None,
         proxy: str | None = None,
-        real_page: bool = True,
+        real_page: bool = False,
     ) -> str:
         if not url or not sitekey:
             raise InternalSolverError("url and sitekey are required")

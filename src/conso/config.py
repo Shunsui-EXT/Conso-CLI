@@ -33,6 +33,9 @@ class ProxyConfig:
     urls: list[str] = field(default_factory=list)
     health_check_url: str = "https://api.ipify.org?format=json"
     max_failures: int = 3
+    #: when True, each registered account is pinned to one proxy (sticky) so
+    #: signup/create_consouser run from a distinct IP.
+    per_account: bool = True
 
     @property
     def enabled(self) -> bool:
@@ -78,6 +81,9 @@ class Settings:
     @classmethod
     def from_env(cls) -> "Settings":
         proxy_urls = [u for u in _env("PROXY_URLS").split(",") if u.strip()]
+        proxy_file = _env("PROXY_FILE")
+        if proxy_file and not proxy_urls:
+            proxy_urls = _load_proxy_file(proxy_file)
         return cls(
             supabase_url=_env("SUPABASE_URL", C.SUPABASE_URL),
             supabase_key=_env("SUPABASE_KEY", C.SUPABASE_PUBLISHABLE_KEY),
@@ -96,5 +102,21 @@ class Settings:
             max_delay_seconds=_env_float("MAX_DELAY_SECONDS", 6.0),
             data_dir=_env("DATA_DIR", "data"),
             logs_dir=_env("LOGS_DIR", "logs"),
-            proxy=ProxyConfig(urls=proxy_urls),
+            proxy=ProxyConfig(
+                urls=proxy_urls,
+                per_account=_env("PROXY_PER_ACCOUNT", "1") == "1",
+            ),
         )
+
+
+def _load_proxy_file(path: str) -> list[str]:
+    """Load proxies from a file (one per line; strips CRLF and blanks)."""
+    if not path or not os.path.exists(path):
+        return []
+    out: list[str] = []
+    with open(path, "r", encoding="utf-8", errors="ignore") as fh:
+        for line in fh:
+            entry = line.strip()
+            if entry and not entry.startswith("#"):
+                out.append(entry)
+    return out

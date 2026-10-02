@@ -15,6 +15,7 @@ concurrency and resumable checkpoints.
 
 from __future__ import annotations
 
+import itertools
 import random
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -66,9 +67,14 @@ def register_account(
     verifier: EmailVerifier | None = None,
     solver: CaptchaSolver | None = None,
     referral_code: str = "",
+    proxy: str = "",
     logger: LogFn | None = None,
 ) -> AccountRecord:
-    """Provision a single account end-to-end."""
+    """Provision a single account end-to-end.
+
+    `proxy` (when set) is pinned to every request for this account, so signup
+    and create_consouser originate from a distinct IP per account.
+    """
     rng = random.Random()
     try:
         identity = build_identity(settings, rng=rng, index=index)
@@ -104,13 +110,17 @@ def register_account(
         return record
 
     record = AccountRecord.now(email=identity.email, password=identity.password, consoname=identity.consoname)
-    client = ConsoClient(settings)
+    record.proxy = proxy
+    client = ConsoClient(settings, transport=Transport(settings, pin_proxy=proxy or None))
     try:
         # Conso enforces Turnstile on signup + login; solve once and reuse.
         captcha_token: str | None = None
         if solver is not None:
+            # Solve from the same proxy the signup will use, when possible.
+            if proxy and hasattr(solver, "pin_account_proxy"):
+                solver.pin_account_proxy(proxy)
             captcha_token = solver.solve_turnstile()
-            _log(logger, f"register: {identity.email} captcha solved")
+            _log(logger, f"register: {identity.email} captcha solved (proxy={proxy or 'direct'})")
 
         _log(logger, f"register: {identity.email} -> supabase signup")
         signup = client.sign_up_email(identity.email, identity.password, captcha_token=captcha_token)
@@ -136,10 +146,16 @@ def register_account(
         record.expires_at = session.expires_at or jwt_expiry(session.access_token)
 
         # Create the Conso user row (extension passes the OAuth subject id).
+        # This MUST succeed: without the row the account cannot farm. A failure
+        # here (e.g. signup_velocity_exceeded) is a failed registration, not an
+        # active one.
         try:
             client.create_consouser(session.user_id)
         except ConsoAPIError as exc:
-            _log(logger, f"register: create_consouser note: {exc}")
+            record.status = "failed"
+            record.note = f"create_consouser: {str(exc)[:160]}"
+            _log(logger, f"register: {identity.email} create_consouser failed: {exc}")
+            return record
 
         # Redeem the referral BEFORE onboarding: the extension shows the
         # referral screen (redeem referral/access code) right after
@@ -193,11 +209,17 @@ def run_registration(
     state = store.load_state()
     done = int(state.get("register_done", 0))
 
+    # Per-account proxy: round-robin the pool so each account signs up from a
+    # distinct IP (spreads the server's signup-velocity limit).
+    proxy_pool = list(settings.proxy.urls) if settings.proxy.per_account else []
+    proxy_cycle = itertools.cycle(proxy_pool) if proxy_pool else None
+
     def task(i: int) -> AccountRecord:
         pacer.wait()
+        acct_proxy = next(proxy_cycle) if proxy_cycle else ""
         record = register_account(
             settings, index=i, verifier=verifier, solver=solver,
-            referral_code=referral_code, logger=logger,
+            referral_code=referral_code, proxy=acct_proxy, logger=logger,
         )
         if record.status == "active":
             engine.report_success()

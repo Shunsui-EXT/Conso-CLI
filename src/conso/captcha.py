@@ -23,6 +23,7 @@ real Google/OIDC id_token is an alternative to solving Turnstile.
 from __future__ import annotations
 
 import os
+import threading
 import time
 from typing import Any, Protocol
 
@@ -195,6 +196,12 @@ class SolverServiceSolver:
         self._proxy_fail_streak = 0
         self._proxy_disabled = False
         self.proxy_max_failures = 3
+        self._pinned_proxy = ""
+        # Minimum seconds between solves (cooldown). Turnstile flags an IP that
+        # solves too rapidly; spacing solves keeps the token flow healthy.
+        self.solve_delay = float(os.environ.get("SOLVER_SOLVE_DELAY", "0") or 0)
+        self._last_solve_at = 0.0
+        self._solve_lock = threading.Lock()
         # Rotating proxy list for the sidecar's per-request `proxy` field.
         self._proxies = list(proxies or [])
         if proxy_file and not self._proxies:
@@ -204,9 +211,15 @@ class SolverServiceSolver:
     def _next_proxy(self) -> str:
         """Round-robin the proxy list; '' means solve directly.
 
-        Returns '' permanently once the circuit breaker trips (the pool has
-        failed to pass Turnstile proxy_max_failures times in a row).
+        A pinned per-account proxy (if set) takes precedence and is consumed
+        once, then the rotating pool resumes. Returns '' permanently once the
+        circuit breaker trips (the pool has failed to pass Turnstile
+        proxy_max_failures times in a row).
         """
+        if self._pinned_proxy:
+            proxy = self._pinned_proxy
+            self._pinned_proxy = ""
+            return proxy
         if self._proxy_disabled or not self._proxies:
             return ""
         proxy = self._proxies[self._proxy_idx % len(self._proxies)]
@@ -220,6 +233,18 @@ class SolverServiceSolver:
         self._proxy_fail_streak += 1
         if self._proxy_fail_streak >= self.proxy_max_failures:
             self._proxy_disabled = True
+
+    def pin_account_proxy(self, proxy: str) -> None:
+        """Force the next solves to use this proxy first (per-account sticky).
+
+        The account's signup proxy is tried before the rotating pool, so the
+        solve and the signup originate from the same IP.
+        """
+        self._pinned_proxy = proxy or ""
+        if proxy:
+            # reset the breaker: a fresh account deserves a fresh proxy try
+            self._proxy_disabled = False
+            self._proxy_fail_streak = 0
 
     def _headers(self) -> dict[str, str]:
         headers = {"Content-Type": "application/json"}
@@ -237,6 +262,13 @@ class SolverServiceSolver:
 
     def solve_turnstile(self, *, sitekey: str = TURNSTILE_SITEKEY,
                         page_url: str = TURNSTILE_PAGE_URL, timeout: float = 120.0) -> str:
+        # Cooldown: space solves out so Cloudflare does not flag the IP.
+        if self.solve_delay > 0:
+            with self._solve_lock:
+                wait = self._last_solve_at + self.solve_delay - time.time()
+                if wait > 0:
+                    time.sleep(wait)
+                self._last_solve_at = time.time()
         last_error = ""
         for _attempt in range(1, self.retries + 1):
             proxy = self._next_proxy()

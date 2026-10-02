@@ -100,19 +100,21 @@ class Transport:
 
     RETRY_STATUS = {429, 500, 502, 503, 504}
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, *, pin_proxy: str | None = None) -> None:
         self.settings = settings
         self.pool = ProxyPool(
             urls=settings.proxy.urls,
             max_failures=settings.proxy.max_failures,
             health_check_url=settings.proxy.health_check_url,
         )
+        # When set, every request uses this one proxy (sticky per account).
+        self.pin_proxy = pin_proxy
         self._session = cffi_requests.Session(impersonate=settings.impersonate)
         if settings.user_agent:
             self._session.headers["User-Agent"] = settings.user_agent
 
     def _proxies(self) -> dict[str, str] | None:
-        url = self.pool.acquire()
+        url = self.pin_proxy or self.pool.acquire()
         if not url:
             return None
         return {"http": url, "https": url}

@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 import typer
 
 from . import economy
+from . import ui
 from .captcha import TURNSTILE_PAGE_URL, TURNSTILE_SITEKEY, build_solver
 from .client import ConsoAPIError, ConsoClient
 from .config import Settings
@@ -39,9 +40,8 @@ _print_lock = threading.Lock()
 
 
 def _log(message: str) -> None:
-    stamp = datetime.now().strftime("%H:%M:%S")
     with _print_lock:
-        typer.echo(f"{stamp} | {message}")
+        ui.log(message, level=ui.classify(message))
 
 
 @app.command()
@@ -144,15 +144,20 @@ def register(
     verifier = build_verifier(settings)
     solver = build_solver(Transport(settings))
     referral_code = referral or settings.default_referral_code
-    _log(f"register start: count={count} concurrency<={settings.max_concurrency} "
-         f"verifier={type(verifier).__name__} solver={type(solver).__name__} "
-         f"referral={referral_code or '-'}")
+    ui.banner("register", solver=type(solver).__name__, verifier=type(verifier).__name__,
+              proxy=f"{len(settings.proxy.urls)} proxies" if settings.proxy.urls else "direct",
+              extra={"count": str(count), "referral": referral_code or "-"})
     results = run_registration(
         settings, count, referral_code=referral_code, store=store,
         verifier=verifier, solver=solver, logger=_log,
     )
     ok = sum(1 for r in results if r.status == "active")
-    _log(f"register done: {ok}/{len(results)} active -> {store.json_path}")
+    failed = len(results) - ok
+    ui.summary("REGISTER DONE", [
+        ("active", f"{ok}/{len(results)}"),
+        ("failed", failed),
+        ("store", store.json_path),
+    ], color="green" if ok else "red")
 
     if earn and ok:
         _log(f"register: --earn set, farming {ok} new account(s)")
@@ -430,14 +435,19 @@ def loop(
     signal.signal(signal.SIGINT, _handle)
     signal.signal(signal.SIGTERM, _handle)
 
-    _log(f"loop start: turns={turns} interval={interval_hours}h cycles={config.max_cycles or 'inf'} "
-         f"missions={config.claim_missions} cap={daily_cap or '-'}")
+    ui.banner("loop", solver=type(solver).__name__,
+              proxy=f"{len(settings.proxy.urls)} proxies" if settings.proxy.urls else "direct",
+              extra={"turns": str(turns), "interval": f"{interval_hours}h",
+                     "accounts": str(len(store.all()))})
     if once:
         result = runner.run_cycle(force=force)
-        _log(f"loop done: +{round(result.zaps, 2)} zaps")
+        ui.summary("LOOP DONE", [
+            ("zaps", round(result.zaps, 2)),
+            ("accounts", len(result.per_account)),
+        ], color="green")
     else:
         runner.run_forever()
-        _log("loop stopped")
+        ui.log("loop stopped", level="warn")
 
 
 @app.command()
@@ -580,9 +590,15 @@ def pipeline(
     signal.signal(signal.SIGINT, _handle)
     signal.signal(signal.SIGTERM, _handle)
 
-    _log(f"pipeline start: register={register} earn={earn} loop={loop} turns={turns}")
+    ui.banner("pipeline", solver=f"internal x{settings.max_concurrency}",
+              verifier="temptf", proxy=f"{len(settings.proxy.urls)} proxies" if settings.proxy.urls else "direct",
+              extra={"register": str(register), "earn": str(earn), "loop": str(loop)})
     summary = orch.run()
-    _log(f"pipeline done: {summary}")
+    ui.summary("PIPELINE DONE", [
+        ("registered", summary.get("registered", 0)),
+        ("active", summary.get("active", 0)),
+        ("earned zaps", round(summary.get("earned_zaps", 0.0), 2)),
+    ], color="green")
 
 
 @app.command()
@@ -652,15 +668,12 @@ def report(
         writer.writerows(rows)
         typer.echo(buf.getvalue().strip())
     else:
-        typer.echo(f"{'STATUS':8} {'ACCOUNT':38} {'TOTAL':>7} {'TODAY':>6} "
-                   f"{'STREAK':>6} {'BOOST':>6}")
-        typer.echo("-" * 78)
-        for r in sorted(rows, key=lambda x: x["total_zaps"], reverse=True):
-            typer.echo(f"{r['status']:8} {r['email'][:38]:38} {r['total_zaps']:7.1f} "
-                       f"{r['today']:6.1f} {r['streak']:6} {r['boost']:6.2f}")
-        typer.echo("-" * 78)
-        typer.echo(f"accounts {len(rows)}  active {active}  failed {failed}  "
-                   f"banned {banned}  total {total:.1f} zaps")
+        ui.accounts_table(sorted(rows, key=lambda x: x["total_zaps"], reverse=True))
+        ui.summary("SUMMARY", [
+            ("accounts", len(rows)), ("active", active),
+            ("failed", failed), ("banned", banned),
+            ("total zaps", f"{total:.1f}"),
+        ], color="green" if not failed and not banned else "yellow")
 
 
 @app.command()
@@ -671,11 +684,20 @@ def dashboard() -> None:
     run_tui()
 
 
+@app.callback(invoke_without_command=True)
+def _default(ctx: typer.Context) -> None:
+    """No subcommand -> open the TUI (dashboard)."""
+    if ctx.invoked_subcommand is None:
+        from .tui.app import run as run_tui
+
+        run_tui()
+
+
 def main() -> None:
     try:
         app()
     except ConsoAPIError as exc:
-        typer.echo(f"error: {exc}", err=True)
+        ui.error(str(exc))
         sys.exit(1)
 
 

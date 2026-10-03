@@ -434,10 +434,20 @@ class InternalSolverAdapter:
             os.environ.get("SOLVER_ATTEMPT_TIMEOUT", "0") or 0
         ) or attempt_timeout or 45.0
         self.backoff = float(os.environ.get("SOLVER_BACKOFF", "0") or 0) or backoff or 3.0
-        # Optional per-solve proxy rotation: SOLVER_PROXY_FILE (one URL/line).
-        # Each attempt rotates to the next entry; consumed once per attempt.
+        # Optional proxy pool: SOLVER_PROXY_FILE (one URL per line).
+        # SOLVER_PROXY_MODE decides how entries are handed out:
+        #   attempt (default) -> rotate to the next entry on every retry attempt
+        #   worker            -> each worker thread keeps ONE entry for its whole
+        #                        life, and different workers get different ones.
+        #                        Use with SOLVER_SERIAL=0 so parallel workers
+        #                        solve from distinct source IPs — Cloudflare
+        #                        gives one usable challenge flow per IP, so
+        #                        distinct IPs are what makes parallelism work.
         self._proxies = _load_proxies(os.environ.get("SOLVER_PROXY_FILE", ""))
+        self._proxy_mode = os.environ.get("SOLVER_PROXY_MODE", "attempt").strip().lower()
         self._proxy_idx = 0
+        self._proxy_lock = threading.Lock()
+        self._local = threading.local()
         from .internal_solver import get_default_solver
 
         self._get = get_default_solver
@@ -466,10 +476,40 @@ class InternalSolverAdapter:
             return None
 
     def _next_proxy(self) -> str:
+        """Pick the proxy for one attempt ("" = use the machine's own IP)."""
         if not self._proxies:
             return ""
-        proxy = self._proxies[self._proxy_idx % len(self._proxies)]
-        self._proxy_idx += 1
+        if self._proxy_mode == "worker":
+            return self._worker_proxy()
+        with self._proxy_lock:
+            proxy = self._proxies[self._proxy_idx % len(self._proxies)]
+            self._proxy_idx += 1
+            return proxy
+
+    def _worker_proxy(self) -> str:
+        """Sticky entry per calling thread, distinct across workers.
+
+        Thread A always exits via the same IP, thread B via a different one, so
+        parallel workers hold separate challenge flows instead of fighting over
+        a single one.
+        """
+        cached = getattr(self._local, "proxy", None)
+        if cached is not None:
+            return cached
+        with self._proxy_lock:
+            proxy = self._proxies[self._proxy_idx % len(self._proxies)]
+            self._proxy_idx += 1
+        self._local.proxy = proxy
+        return proxy
+
+    def _rotate_worker_proxy(self) -> str:
+        """Move this worker to the next entry (used on retry)."""
+        if not self._proxies:
+            return ""
+        with self._proxy_lock:
+            proxy = self._proxies[self._proxy_idx % len(self._proxies)]
+            self._proxy_idx += 1
+        self._local.proxy = proxy
         return proxy
 
     def solve_turnstile(self, *, sitekey: str = TURNSTILE_SITEKEY,
@@ -502,7 +542,13 @@ class InternalSolverAdapter:
         """Run the retry loop; caller decides whether it is serialised."""
         last = ""
         for attempt in range(1, self.attempts + 1):
-            proxy = self._next_proxy()
+            if attempt == 1 or self._proxy_mode != "worker":
+                proxy = self._next_proxy()
+            else:
+                # Retrying on the same IP repeats the same failure: a flagged or
+                # rejected IP fails identically. Move the worker to the next
+                # entry so each retry is a genuinely different source IP.
+                proxy = self._rotate_worker_proxy()
             try:
                 return solver.solve(
                     page_url, sitekey, timeout_seconds=budget,

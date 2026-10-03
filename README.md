@@ -380,8 +380,35 @@ python main.py register 8 --earn --workers 4
 ```
 
 `--workers` parallelises the **earn** phase (pure HTTP, no captcha), which
-scales freely. Set `SOLVER_SERIAL=0` only if every worker exits through its own
-residential IP — otherwise parallel solves fail all at once.
+scales freely.
+
+### Making parallel solves actually work
+
+The one-IP-one-flow limit disappears when each worker exits through a
+**different** IP. Measured on this machine:
+
+| Setup | Result |
+|---|---|
+| 2 parallel workers, both direct (one residential IP) | 1/2 solved |
+| 2 parallel workers, two datacenter proxies | **0/2** |
+| 3 serial, `SOLVER_SOLVE_DELAY=45` | 3/3 |
+
+So parallel solves are possible, but only with distinct IPs that Cloudflare
+accepts. Configure it:
+
+```bash
+SOLVER_PROXY_FILE=data/proxies.txt   # one URL per line
+SOLVER_PROXY_MODE=worker             # each worker keeps one entry
+SOLVER_SERIAL=0                      # let workers solve concurrently
+```
+
+`SOLVER_PROXY_MODE=worker` pins one entry per worker thread (verified: worker 0
+and worker 1 got different IPs, each sticky across its attempts). A retry moves
+that worker to the next entry instead of repeating the same failed IP.
+
+**Datacenter proxies do not work here** — 100 proxies from one hosting ASN scored
+0/2. The entries must be residential. With only one acceptable IP, leave
+`SOLVER_SERIAL=1` and let registration overlap on everything except the solve.
 
 ---
 

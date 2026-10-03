@@ -52,18 +52,51 @@ class AdaptiveConcurrency:
 
 
 class Pacer:
-    """Jittered sleep between requests to avoid fixed-interval detection."""
+    """Jittered sleep between requests to avoid fixed-interval detection.
 
-    def __init__(self, min_seconds: float, max_seconds: float) -> None:
+    `per_worker=True` gives each calling thread its own clock instead of one
+    shared one. Use it when every worker already acts through a distinct
+    identity (e.g. one pinned proxy per account): a global clock would just
+    serialise the pool and cap throughput at one request per delay window,
+    which defeats parallelism entirely.
+    """
+
+    def __init__(self, min_seconds: float, max_seconds: float,
+                 *, per_worker: bool = False) -> None:
         self.min_seconds = min_seconds
         self.max_seconds = max_seconds
+        self.per_worker = per_worker
         self._lock = threading.Lock()
         self._last = 0.0
+        # Per-thread clocks: only used when per_worker is set.
+        self._local = threading.local()
+
+    def _clock(self) -> float:
+        """Last request timestamp for this thread (or global, if shared)."""
+        if self.per_worker:
+            return float(getattr(self._local, "last", 0.0))
+        return self._last
+
+    def _set_clock(self, value: float) -> None:
+        if self.per_worker:
+            self._local.last = value
+        else:
+            self._last = value
 
     def wait(self) -> None:
         with self._lock:
-            now = time.monotonic()
             target = random.uniform(self.min_seconds, self.max_seconds)
+        # The sleep itself must run OUTSIDE the lock when clocks are per
+        # thread, otherwise workers still queue behind each other.
+        if self.per_worker:
+            last = self._clock()
+            elapsed = time.monotonic() - last
+            if elapsed < target:
+                time.sleep(target - elapsed)
+            self._set_clock(time.monotonic())
+            return
+        with self._lock:
+            now = time.monotonic()
             elapsed = now - self._last
             if elapsed < target:
                 time.sleep(target - elapsed)

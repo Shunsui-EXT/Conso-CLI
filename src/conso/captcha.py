@@ -404,6 +404,15 @@ class CapsolverApiSolver:
         raise TimeoutError("capsolver turnstile solve timed out")
 
 
+# Process-wide serialisation of solves. One source IP = one usable challenge
+# flow; overlapping solves make every participant time out. See the comment in
+# InternalSolverAdapter.solve_turnstile for the measurement.
+# SOLVER_SERIAL=0 disables this when every worker exits via a distinct IP
+# (residential proxy per worker), where parallel solves are safe again.
+_SOLVE_LOCK = threading.Lock()
+_SOLVE_SERIAL = os.environ.get("SOLVER_SERIAL", "1") != "0"
+
+
 class InternalSolverAdapter:
     """Turnstile solver running Camoufox in-process (no sidecar).
 
@@ -476,6 +485,21 @@ class InternalSolverAdapter:
         # rate-flagged IP never returns a token, so burn a short slice per
         # attempt instead of the whole timeout on attempt #1.
         budget = int(max(10, min(timeout, self.attempt_timeout)))
+        # Cloudflare issues one challenge flow per source IP. Concurrent solves
+        # from the same IP fight over it and ALL of them time out (measured:
+        # 4 parallel -> 0/4; 3 serial with SOLVER_SOLVE_DELAY=45 -> 3/3).
+        # So solves are serialised process-wide even though the pool of
+        # registration workers runs in parallel — the workers still overlap on
+        # everything that is not the solve (signup, OTP, RPC, onboarding).
+        # Set SOLVER_SERIAL=0 only when each worker exits via a distinct IP.
+        if not _SOLVE_SERIAL:
+            return self._solve_attempts(solver, page_url, sitekey, budget)
+        with _SOLVE_LOCK:
+            return self._solve_attempts(solver, page_url, sitekey, budget)
+
+    def _solve_attempts(self, solver, page_url: str, sitekey: str,
+                        budget: int) -> str:
+        """Run the retry loop; caller decides whether it is serialised."""
         last = ""
         for attempt in range(1, self.attempts + 1):
             proxy = self._next_proxy()
@@ -488,8 +512,8 @@ class InternalSolverAdapter:
                 last = str(exc)
                 if attempt >= self.attempts:
                     break
-                # A hard browser failure (camoufox missing / cannot launch) will
-                # fail identically on every retry — do not burn the run on it.
+                # A hard browser failure (camoufox missing / cannot launch)
+                # fails identically on every retry — do not burn the run.
                 if "not installed" in last or "failed to start" in last:
                     break
                 time.sleep(self.backoff)

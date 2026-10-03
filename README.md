@@ -30,10 +30,11 @@ inside systemd.
 8. [Common workflows](#common-workflows)
 9. [How it works](#how-it-works)
 10. [Live monitor](#live-monitor)
-11. [Captcha solver](#captcha-solver)
-12. [Limits & anti-abuse](#limits--anti-abuse)
-13. [Troubleshooting](#troubleshooting)
-14. [License](#license)
+11. [Parallelism](#parallelism)
+12. [Captcha solver](#captcha-solver)
+13. [Limits & anti-abuse](#limits--anti-abuse)
+14. [Troubleshooting](#troubleshooting)
+15. [License](#license)
 
 ---
 
@@ -129,6 +130,8 @@ Camoufox solver). The values you may want to change:
 | `PROXY_PER_ACCOUNT` | `1` | Pin one proxy per account (spreads the signup-velocity limit). |
 | `SOLVER_PROXY_FILE` | *(empty)* | Proxy for the **captcha solver only** (separate from `PROXY_FILE`). Leave empty normally. |
 | `MIN_DELAY_SECONDS` / `MAX_DELAY_SECONDS` | `20` / `60` | Jittered pacing between turns on one account. |
+| `REGISTER_MIN_DELAY_SECONDS` / `REGISTER_MAX_DELAY_SECONDS` | `2` / `6` | Jittered pacing between signups (registration only). |
+| `SOLVER_SERIAL` | `1` | Serialise solves process-wide (see [Parallelism](#parallelism)). |
 
 You do **not** need to touch `SUPABASE_URL` / `SUPABASE_KEY` — they are the
 extension's public values, extracted and shipped.
@@ -333,6 +336,52 @@ What each row means:
 If stdout is not a terminal (cron, CI, a pipe) the panel is skipped and only
 plain log lines are printed, so `python main.py loop --once > run.log` stays
 readable.
+
+---
+
+## Parallelism
+
+Registering N accounts already runs N workers (`ThreadPoolExecutor` +
+`AdaptiveConcurrency`), but throughput is bounded by the **captcha**, not by
+the pool. Measured on one residential IP:
+
+| What runs in parallel | Result |
+|---|---|
+| 4 solves in parallel | **0/4** — every one times out |
+| 3 solves serially, `SOLVER_SOLVE_DELAY=45` | **3/3** solved |
+| 4 accounts, solves serialised | **4/4 active** |
+
+Cloudflare hands out one usable challenge flow per source IP. Overlapping
+solves fight over it and all of them lose. So by default:
+
+- **solves are serialised process-wide** (`SOLVER_SERIAL=1`), while
+- **everything else still overlaps** — signup, OTP, `create_consouser`,
+  referral, onboarding run across `MAX_CONCURRENCY` workers.
+
+What actually makes registration faster:
+
+```bash
+# 1. one proxy per account -> a different source IP per signup
+PROXY_PER_ACCOUNT=1
+PROXY_FILE=data/proxies.txt
+
+# 2. keep registration off the 20-60s turn pacing
+REGISTER_MIN_DELAY_SECONDS=2
+REGISTER_MAX_DELAY_SECONDS=6
+
+# 3. space the solves so the IP is not flagged
+SOLVER_SOLVE_DELAY=45
+```
+
+Then:
+
+```bash
+python main.py register 8 --earn --workers 4
+```
+
+`--workers` parallelises the **earn** phase (pure HTTP, no captcha), which
+scales freely. Set `SOLVER_SERIAL=0` only if every worker exits through its own
+residential IP — otherwise parallel solves fail all at once.
 
 ---
 

@@ -73,6 +73,14 @@ class Settings:
     min_delay_seconds: float = 20.0
     max_delay_seconds: float = 60.0
 
+    # Registration pacing, separate from the turn pacing above. Turns reuse one
+    # account's session, so they need long gaps; signups each use a fresh
+    # identity and (with PROXY_PER_ACCOUNT) a distinct IP, so they only need
+    # enough jitter to avoid a fixed cadence. Keeping the turn delay here would
+    # serialise the worker pool and cap register throughput at ~1/min.
+    register_min_delay_seconds: float = 2.0
+    register_max_delay_seconds: float = 6.0
+
     # Paths
     data_dir: str = "data"
     logs_dir: str = "logs"
@@ -102,6 +110,8 @@ class Settings:
             default_referral_code=_env("DEFAULT_REFERRAL_CODE"),
             min_delay_seconds=_env_float("MIN_DELAY_SECONDS", 20.0),
             max_delay_seconds=_env_float("MAX_DELAY_SECONDS", 60.0),
+            register_min_delay_seconds=_env_float("REGISTER_MIN_DELAY_SECONDS", 2.0),
+            register_max_delay_seconds=_env_float("REGISTER_MAX_DELAY_SECONDS", 6.0),
             data_dir=_env("DATA_DIR", "data"),
             logs_dir=_env("LOGS_DIR", "logs"),
             proxy=ProxyConfig(

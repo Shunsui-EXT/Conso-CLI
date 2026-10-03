@@ -257,7 +257,14 @@ def run_registration(
     _emit("BATCH_STARTED", target=count, solver=type(solver).__name__ if solver else "",
           referral=referral_code)
     engine = AdaptiveConcurrency(initial=settings.concurrency, maximum=settings.max_concurrency)
-    pacer = Pacer(settings.min_delay_seconds, settings.max_delay_seconds)
+    # Per-worker pacing: each account signs up from its own identity (and its
+    # own pinned proxy when PROXY_PER_ACCOUNT=1), so a shared clock would only
+    # serialise the pool. Registration also uses its own (much shorter) delay
+    # range — the 20-60s turn pacing is for reusing one account's session.
+    pacer = Pacer(
+        settings.register_min_delay_seconds, settings.register_max_delay_seconds,
+        per_worker=True,
+    )
     results: list[PipelineResult] = []
     lock = threading.Lock()
     state = store.load_state()

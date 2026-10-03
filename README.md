@@ -231,6 +231,7 @@ its flags.
 | `loop` | Recurring daily cycle (`--once`, `--interval-hours`, `--workers`, `--daily-cap`, `--min-remaining`) |
 | `session` | Show/refresh stored sessions without re-login (`--force`) |
 | `recover` | Refresh → password → email OTP recovery (`--email`) |
+| `scripts/fix_account.py` | Re-establish a session when the stored refresh token went stale (`--email`) |
 | `status` | Daily-limit / earning state per account (`--email`) |
 | `solve` | Solve one Turnstile challenge (sanity check) |
 | `proxies` | Health-check a proxy list (`--file`, `--limit`) |
@@ -551,6 +552,7 @@ python scripts/bench_solver.py --runs 3 --delay 20
 | Turnstile solves all time out (`rate-flagged`) | The solve IP is flagged by Cloudflare — wait ~30 min, raise `SOLVER_SOLVE_DELAY`, use residential proxies, or switch to `CAPTCHA_PROVIDER=capsolver` / `2captcha`. |
 | Solver works locally but never on my VPS | The VPS **own IP** is the problem, not the install. Cloudflare will not issue a challenge to hosting ASNs (measured: residential ASN 4761 solved, AWS ASN 16509 timed out even though `conso.xyz` and `challenges.cloudflare.com` both returned 200). Registration needs Capsolver/2Captcha or a residential proxy. **Daily earning still works** — it reuses stored sessions and never touches the captcha, so `loop --once` runs fine on a VPS with a copied `data/accounts.json`. |
 | `account_banned` | A turn was submitted before onboarding, or the daily cap was passed. Use `status` to inspect. |
+| `recover` keeps failing with `Token has expired or is invalid` | The inbox still holds the **previous** code, so the same expired OTP gets replayed. `scripts/fix_account.py --email ...` snapshots the old code first, requests a new one, waits until the code actually *changes*, then verifies — and sets a password so the next recovery uses the cheaper password grant. |
 | `signup_velocity_exceeded` | Too many signups from one IP — set `PROXY_FILE` (or `PROXY_URLS`) + `PROXY_PER_ACCOUNT=1`. Note: `PROXY_FILE` is for account traffic; `SOLVER_PROXY_FILE` is a different setting for the captcha solver only. |
 | Turnstile solves all time out | The solve IP is flagged — wait ~30 min, or raise `SOLVER_SOLVE_DELAY`, or use residential proxies. |
 | `report` shows 0 zaps | Stats are cached; add `--refresh` to poll the server. |
@@ -583,6 +585,7 @@ src/conso/
   cli.py                      typer CLI (16 subcommands)
   config.py                   env/.env settings
 scripts/                      setup_internal_solver.sh, setup/start_solver.sh (sidecar),
+                              fix_account.py (re-establish a stale session),
                               bench_solver.py (compare solver providers),
                               parallel_register.sh, fetch_extension.sh, solver_watchdog.sh
 analysis/                     RE report, schema, solver studies, probes

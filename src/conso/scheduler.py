@@ -43,13 +43,8 @@ def _log(logger: LogFn | None, message: str) -> None:
 
 
 def _emit(name: str, **data) -> None:
-    """Best-effort TUI event emit; never breaks the run."""
-    try:
-        from .tui.events import EventType, get_event_bus
-
-        get_event_bus().emit(EventType[name], **data)
-    except Exception:
-        pass
+    """Event hook retained for call-site compatibility (no-op without the TUI)."""
+    return None
 
 
 @dataclass

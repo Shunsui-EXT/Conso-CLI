@@ -412,7 +412,23 @@ class InternalSolverAdapter:
     """
 
     def __init__(self, *, headless: bool = True, timeout: float = 120.0,
-                 real_page: bool = False) -> None:
+                 real_page: bool = False, attempts: int = 0,
+                 attempt_timeout: float = 0.0, backoff: float = 0.0) -> None:
+        # Fail-fast sizing: one browser-free attempt never blocks the run for
+        # minutes. A flagged IP is detected by a short timeout, then the next
+        # attempt retries (optionally through a rotating proxy).
+        #   SOLVER_ATTEMPTS        -> attempts per solve (default 3)
+        #   SOLVER_ATTEMPT_TIMEOUT -> per-attempt timeout (default 45s)
+        #   SOLVER_BACKOFF         -> seconds between attempts (default 3)
+        self.attempts = int(os.environ.get("SOLVER_ATTEMPTS", "0") or 0) or attempts or 3
+        self.attempt_timeout = float(
+            os.environ.get("SOLVER_ATTEMPT_TIMEOUT", "0") or 0
+        ) or attempt_timeout or 45.0
+        self.backoff = float(os.environ.get("SOLVER_BACKOFF", "0") or 0) or backoff or 3.0
+        # Optional per-solve proxy rotation: SOLVER_PROXY_FILE (one URL/line).
+        # Each attempt rotates to the next entry; consumed once per attempt.
+        self._proxies = _load_proxies(os.environ.get("SOLVER_PROXY_FILE", ""))
+        self._proxy_idx = 0
         from .internal_solver import get_default_solver
 
         self._get = get_default_solver
@@ -440,6 +456,13 @@ class InternalSolverAdapter:
         except Exception:
             return None
 
+    def _next_proxy(self) -> str:
+        if not self._proxies:
+            return ""
+        proxy = self._proxies[self._proxy_idx % len(self._proxies)]
+        self._proxy_idx += 1
+        return proxy
+
     def solve_turnstile(self, *, sitekey: str = TURNSTILE_SITEKEY,
                         page_url: str = TURNSTILE_PAGE_URL, timeout: float = 120.0) -> str:
         solver = self._solver()
@@ -448,23 +471,74 @@ class InternalSolverAdapter:
             sep = "&" if "?" in page_url else "?"
             from urllib.parse import quote
             page_url = f"{page_url}{sep}redirect_uri={quote(CONSO_REDIRECT_URIS[0], safe='')}"
-        return solver.solve(
-            page_url, sitekey, timeout_seconds=int(timeout), real_page=self._real_page,
+
+        # Per-attempt budget: min(caller timeout, SOLVER_ATTEMPT_TIMEOUT). A
+        # rate-flagged IP never returns a token, so burn a short slice per
+        # attempt instead of the whole timeout on attempt #1.
+        budget = int(max(10, min(timeout, self.attempt_timeout)))
+        last = ""
+        for attempt in range(1, self.attempts + 1):
+            proxy = self._next_proxy()
+            try:
+                return solver.solve(
+                    page_url, sitekey, timeout_seconds=budget,
+                    real_page=self._real_page, proxy=proxy or None,
+                )
+            except Exception as exc:  # noqa: BLE001 - retry across attempts
+                last = str(exc)
+                if attempt >= self.attempts:
+                    break
+                # A hard browser failure (camoufox missing / cannot launch) will
+                # fail identically on every retry — do not burn the run on it.
+                if "not installed" in last or "failed to start" in last:
+                    break
+                time.sleep(self.backoff)
+        raise RuntimeError(
+            f"turnstile solve failed after {self.attempts} attempt(s) "
+            f"({budget}s each): {last}"
         )
 
 
-def build_solver(transport: Transport) -> CaptchaSolver:
-    """Factory driven by env.
+class FallbackSolver:
+    """Try providers in order; first token wins.
 
-    CAPTCHA_PROVIDER:
-      internal   -> in-process Camoufox (no sidecar, no browser service)
-      none       -> NoopSolver (needs CAPTCHA_TOKEN for auth steps)
-      capsolver  -> Capsolver managed API      (BROWSER-FREE, pure HTTP)
-      2captcha   -> 2Captcha managed API       (BROWSER-FREE, pure HTTP)
-      manual     -> operator pastes a token
-      service    -> self-hosted captcha-solver sidecar (uses a local browser)
+    Wraps a primary solver and a list of fallbacks, e.g. internal Camoufox ->
+    capsolver -> 2captcha. A rate-flagged local IP then degrades to a paid API
+    instead of failing the whole registration.
     """
-    provider = os.environ.get("CAPTCHA_PROVIDER", "none").strip().lower()
+
+    def __init__(self, solvers: list[CaptchaSolver]) -> None:
+        self.solvers = [s for s in solvers if s is not None]
+        self.last_errors: list[str] = []
+
+    def warm(self, *, timeout: float = 60.0) -> bool:
+        for solver in self.solvers:
+            warm = getattr(solver, "warm", None)
+            if callable(warm):
+                try:
+                    if warm(timeout=timeout):
+                        return True
+                except Exception:  # noqa: BLE001
+                    pass
+        return False
+
+    def solve_turnstile(self, *, sitekey: str = TURNSTILE_SITEKEY,
+                        page_url: str = TURNSTILE_PAGE_URL, timeout: float = 120.0) -> str:
+        self.last_errors = []
+        for solver in self.solvers:
+            try:
+                return solver.solve_turnstile(
+                    sitekey=sitekey, page_url=page_url, timeout=timeout,
+                )
+            except Exception as exc:  # noqa: BLE001 - try the next provider
+                self.last_errors.append(f"{type(solver).__name__}: {exc}")
+        raise RuntimeError(
+            "all captcha providers failed -> " + " | ".join(self.last_errors)
+        )
+
+
+def _build_one(provider: str, transport: Transport) -> CaptchaSolver | None:
+    """Instantiate a single provider by name (None for none/manual/unknown)."""
     if provider == "internal":
         return InternalSolverAdapter(
             headless=os.environ.get("SOLVER_HEADLESS", "1") != "0",
@@ -489,17 +563,47 @@ def build_solver(transport: Transport) -> CaptchaSolver:
         )
     if provider == "capsolver":
         key = os.environ.get("CAPSOLVER_API_KEY", "")
+        if not key:
+            return None  # no key configured -> skip this fallback
         if os.environ.get("CAPSOLVER_MODE", "api") == "sdk":
             return CapSolverSolver(key, transport)
-        return CapsolverApiSolver(
-            key, transport,
-            proxy=os.environ.get("CAPSOLVER_PROXY", ""),
-        )
+        return CapsolverApiSolver(key, transport, proxy=os.environ.get("CAPSOLVER_PROXY", ""))
     if provider == "2captcha":
-        return TwoCaptchaSolver(os.environ.get("TWOCAPTCHA_API_KEY", ""), transport)
+        key = os.environ.get("TWOCAPTCHA_API_KEY", "")
+        if not key:
+            return None
+        return TwoCaptchaSolver(key, transport)
     if provider == "manual":
         return ManualSolver()
-    return NoopSolver(os.environ.get("CAPTCHA_TOKEN", ""))
+    if provider == "none":
+        return NoopSolver(os.environ.get("CAPTCHA_TOKEN", ""))
+    return None
+
+
+def build_solver(transport: Transport) -> CaptchaSolver:
+    """Factory driven by env.
+
+    CAPTCHA_PROVIDER:
+      internal   -> in-process Camoufox (no sidecar, no browser service)
+      none       -> NoopSolver (needs CAPTCHA_TOKEN for auth steps)
+      capsolver  -> Capsolver managed API      (BROWSER-FREE, pure HTTP)
+      2captcha   -> 2Captcha managed API       (BROWSER-FREE, pure HTTP)
+      manual     -> operator pastes a token
+      service    -> self-hosted captcha-solver sidecar (uses a local browser)
+    """
+    # CAPTCHA_PROVIDER accepts a chain: "internal,capsolver,2captcha".
+    raw = os.environ.get("CAPTCHA_PROVIDER", "none").strip().lower()
+    names = [p.strip() for p in raw.replace("|", ",").split(",") if p.strip()]
+    solvers: list[CaptchaSolver] = []
+    for name in names:
+        solver = _build_one(name, transport)
+        if solver is not None:
+            solvers.append(solver)
+    if not solvers:
+        return NoopSolver(os.environ.get("CAPTCHA_TOKEN", ""))
+    if len(solvers) == 1:
+        return solvers[0]
+    return FallbackSolver(solvers)
 
 
 def ensure_solver_ready(*, logger=None) -> bool:
@@ -519,23 +623,26 @@ def ensure_solver_ready(*, logger=None) -> bool:
         if logger:
             logger(msg)
 
-    provider = os.environ.get("CAPTCHA_PROVIDER", "none").strip().lower()
-    if provider == "internal":
+    raw = os.environ.get("CAPTCHA_PROVIDER", "none").strip().lower()
+    providers = [p.strip() for p in raw.replace("|", ",").split(",") if p.strip()]
+    if "internal" in providers:
         try:
             from .internal_solver import InternalTurnstileSolver, get_default_solver
 
             if not InternalTurnstileSolver.is_available():
                 _log("solver: camoufox not installed — run scripts/setup_internal_solver.sh")
-                return False
-            _log("solver: warming Camoufox browser ...")
-            ok = get_default_solver().warm(timeout=90)
-            _log("solver: Camoufox ready" if ok else "solver: Camoufox warm failed (will retry on solve)")
-            return ok
+            else:
+                _log("solver: warming Camoufox browser ...")
+                ok = get_default_solver().warm(timeout=90)
+                _log("solver: Camoufox ready" if ok else "solver: Camoufox warm failed (will retry on solve)")
+                if ok:
+                    return True
         except Exception as exc:  # noqa: BLE001
             _log(f"solver: internal warm error: {exc}")
-            return False
+    else:
+        return True  # managed API / none / manual need no startup
 
-    if provider == "service":
+    if "service" in providers:
         url = os.environ.get("SOLVER_URL", "http://127.0.0.1:8877").rstrip("/")
         if _sidecar_alive(url):
             _log("solver: sidecar already running")

@@ -6,8 +6,7 @@ Phases (each optional):
   earn     : claim missions + farm turns for new accounts
   loop     : recurring daily earn cycle for all stored accounts
 
-Emits TUI events throughout, so `python main.py pipeline` and the TUI share one
-source of truth. Resumable: registration state is checkpointed in the store.
+Resumable: registration state is checkpointed in the store.
 """
 
 from __future__ import annotations
@@ -24,16 +23,13 @@ from .scheduler import DailyLoop, LoopConfig
 from .storage import Store
 from .transport import Transport
 from .verifiers import build_verifier
-from .tui.events import EventType, get_event_bus
 
 LogFn = Callable[[str], None]
 
 
 def _emit(name: str, **data) -> None:
-    try:
-        get_event_bus().emit(EventType[name], **data)
-    except Exception:
-        pass
+    """Event hook retained for call-site compatibility (no-op without the TUI)."""
+    return None
 
 
 @dataclass

@@ -63,13 +63,8 @@ def _log(default: LogFn | None, message: str) -> None:
 
 
 def _emit(event_type_name: str, **data: Any) -> None:
-    """Best-effort TUI event emit; never breaks the pipeline."""
-    try:
-        from .tui.events import EventType, get_event_bus
-
-        get_event_bus().emit(EventType[event_type_name], **data)
-    except Exception:
-        pass
+    """Event hook retained for call-site compatibility (no-op without the TUI)."""
+    return None
 
 
 def _wait_for_code(verifier: EmailVerifier, address: str, *, timeout: float) -> str | None:

@@ -696,21 +696,13 @@ def report(
         ], color="green" if not failed and not banned else "yellow")
 
 
-@app.command()
-def dashboard() -> None:
-    """Launch the TUI control center (live register/farm monitoring)."""
-    from .tui.app import run as run_tui
-
-    run_tui()
-
-
 @app.callback(invoke_without_command=True)
 def _default(ctx: typer.Context) -> None:
-    """No subcommand -> open the TUI (dashboard)."""
+    """No subcommand -> print help (there is no interactive TUI)."""
     if ctx.invoked_subcommand is None:
-        from .tui.app import run as run_tui
-
-        run_tui()
+        ui.banner("help")
+        typer.echo(ctx.get_help())
+        raise typer.Exit(0)
 
 
 def main() -> None:

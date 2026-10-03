@@ -5,8 +5,9 @@ Chrome extension (v0.1.4.0). It talks directly to the Conso backend (Supabase +
 `conso.xyz`) — API-first, no browser needed for the account/turn logic.
 
 It can **provision accounts**, **earn zaps** (missions + synthetic AI-usage
-turns), **keep sessions alive**, and **run on a schedule**, with a Textual
-terminal dashboard for live monitoring.
+turns), **keep sessions alive**, and **run on a schedule** — all from the CLI
+with a Rich (non-interactive) output. No TUI, no curses: every command prints
+and exits, so it runs fine over SSH, in cron, or inside systemd.
 
 > **Scope / disclaimer.** This is a reverse-engineering research tool that
 > automates a third-party service. It is published for research and educational
@@ -23,10 +24,10 @@ terminal dashboard for live monitoring.
 4. [Configure (.env)](#configure-env)
 5. [Verify it works](#verify-it-works)
 6. [Quick start](#quick-start)
-7. [Using the TUI](#using-the-tui)
-8. [CLI reference](#cli-reference)
-9. [Common workflows](#common-workflows)
-10. [How it works](#how-it-works)
+7. [CLI reference](#cli-reference)
+8. [Common workflows](#common-workflows)
+9. [How it works](#how-it-works)
+10. [Captcha solver](#captcha-solver)
 11. [Limits & anti-abuse](#limits--anti-abuse)
 12. [Troubleshooting](#troubleshooting)
 13. [License](#license)
@@ -41,7 +42,7 @@ terminal dashboard for live monitoring.
 | **Earn** | `earn` / `farm` | Claims daily/bonus missions and submits synthetic AI-usage turns for zaps |
 | **Keep alive** | `session` / `recover` | Reuses/refreshes sessions without re-login; recovers via email OTP |
 | **Automate** | `loop` / `pipeline` | Recurring daily cycle, or a one-shot register→earn chain |
-| **Monitor** | `dashboard` / `report` | Textual TUI, or a headless one-shot report |
+| **Monitor** | `report` | Headless one-shot status (table / json / csv) |
 
 ---
 
@@ -97,7 +98,7 @@ are ready. `python main.py solve` should print a token (`solved: token_len=...`)
 > **No `PYTHONPATH` needed.** `main.py` adds `src/` to the import path itself.
 >
 > **Optional:** `pip install -e .` gives you a `conso` command, so you can run
-> `conso dashboard` instead of `python main.py dashboard`.
+> `conso report` instead of `python main.py report`.
 
 ### Why `playwright==1.60`?
 
@@ -190,64 +191,6 @@ You should see a banner, coloured logs, and a summary panel:
 ╰─────────────────────────────────────────────────────────────────────────────╯
 ```
 
-**Interactive path — open the dashboard:**
-
-```bash
-python main.py            # no command -> opens the TUI
-# or
-python main.py dashboard
-```
-
----
-
-## Using the TUI
-
-![Idle — portfolio health](docs/img/tui-idle.png)
-![Running — live monitor](docs/img/tui-running.png)
-![Pipeline](docs/img/tui-pipeline.png)
-![Metrics](docs/img/tui-metrics.png)
-![Alerts](docs/img/tui-alerts.png)
-![Accounts](docs/img/tui-accounts.png)
-
-On start a **menu** appears. Pick an action, fill the fields, press a button:
-
-```
-CONSO FARM — pilih aksi
-  Register = akun baru + earn · Daily = earn akun lama · Monitor = lihat saja
-
-  Jumlah akun (register):  [8]
-  Turns per akun:          [10]
-  Farm workers (paralel):  [2]
-  Solver concurrent (0=env): [0]
-  Referral code (kosong = dari .env): [ ]
-  Only-new (earn akun baru saja)? 1=ya / 0=semua: [0]
-
-  [ Register ]  [ Daily task ]  [ Monitor ]  [ Stop ]
-```
-
-- **Register** — provisions N new accounts, then earns for them.
-- **Daily task** — runs the earn cycle (missions + turns) for existing accounts.
-- **Monitor** — just watch, no run started.
-- **Stop** — gracefully stops the active run.
-
-**Views (keys):**
-
-| Key | View | What it shows |
-|---|---|---|
-| `1` | Overview | **Idle**: portfolio health (store zaps, cap bar, top accounts, sparkline). **Running**: live monitor (progress, ETA, zaps/min sparkline, platform breakdown, errors). |
-| `2` | Accounts | Table: `ST · EMAIL · STAGE · TOTAL · TODAY · STREAK · BOOST · PROXY · NOTE`, filterable. |
-| `3` | Pipeline | Kanban of accounts by stage (queued → captcha → signup → otp → … → done / failed). |
-| `4` | Metrics | zaps/min bar chart + current/avg/peak + success rate. |
-| `5` | Alerts | Accounts needing attention (banned / failed / capped). |
-| `l` | Logs | Realtime event stream. |
-| `m` | Menu | Start another run. |
-| `p` | — | Refresh server stats (total/today/streak/boost). |
-| `x` | — | Stop the active run. |
-| `q` | — | Quit. |
-
-The TUI and the CLI share one event bus, so a headless `python main.py
-pipeline ...` in another terminal feeds the same dashboard.
-
 ---
 
 ## CLI reference
@@ -261,7 +204,6 @@ its flags.
 | `doctor` | Report the solver mode and whether the core is browser-free |
 | `register N` | Provision N accounts (`--dry-run`, `--referral`, `--earn`, `--turns`) |
 | `pipeline` | One-shot chain: `--register N --earn --loop --only-new --workers N` |
-| `dashboard` | Launch the TUI control center |
 | `report` | Headless status (`--fmt table\|json\|csv`, `--refresh`) |
 | `farm` | Missions + synthetic turns (`--turns`, `--email`, `--earn/--no-earn`) |
 | `earn` | Claim missions/codes (`--list`, `--referral`, `--access`, `--missions`) |
@@ -352,10 +294,44 @@ from the api.js `onload` callback; the resulting token is accepted by Conso.
 that pass Conso's email allowlist (disposable domains like mail.tm / ncaori are
 blocked).
 
-### Captcha solver setup (internal)
+## Captcha solver
 
 **The solver starts automatically.** Every run (`register`, `pipeline`, `loop`)
-calls `ensure_solver_ready()` first, which:
+calls `ensure_solver_ready()` first, which warms the browser (or starts the
+sidecar) so the first solve is not paying launch latency.
+
+**Solving is fail-fast and self-healing.** A rate-flagged IP never returns a
+token, so instead of burning one long timeout per solve, each solve is split
+into short attempts that rotate strategy:
+
+```
+attempt 1  -> direct IP        (SOLVER_ATTEMPT_TIMEOUT, default 45s)
+attempt 2  -> next proxy       (SOLVER_PROXY_FILE, round-robin)
+attempt 3  -> next proxy       (SOLVER_BACKOFF seconds apart, default 3s)
+   ...     -> SOLVER_ATTEMPTS total (default 3)
+```
+
+Tune it in `.env`:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `SOLVER_ATTEMPTS` | `3` | Attempts per solve before the account is marked failed. |
+| `SOLVER_ATTEMPT_TIMEOUT` | `45` | Per-attempt budget in seconds. Lower = fail faster on a flagged IP. |
+| `SOLVER_BACKOFF` | `3` | Seconds between attempts. |
+| `SOLVER_PROXY_FILE` | *(empty)* | Proxy file used **by the solver**; each attempt rotates to the next line. |
+| `SOLVER_MAX_CONCURRENT` | `8` | Parallel browser solves. |
+| `SOLVER_SOLVE_DELAY` | `5` | Minimum seconds between solves (keeps the IP off Cloudflare's radar). |
+
+**Provider chaining.** `CAPTCHA_PROVIDER` also accepts a comma-separated chain.
+The first provider that returns a token wins, so a flagged local IP degrades
+into a paid API instead of failing the registration:
+
+```bash
+CAPTCHA_PROVIDER=internal,capsolver,2captcha
+```
+
+Providers with no API key configured are skipped automatically, so
+`internal,capsolver` is safe even before you buy a key.
 - for `internal` — **warms the embedded Camoufox browser** before the first
   account, so the first solve is fast (no launch latency mid-run);
 - for `service` — checks the sidecar health and **starts it automatically** via
@@ -420,7 +396,6 @@ key in `.env`. No Camoufox download needed in that case.
 | `account_banned` | A turn was submitted before onboarding, or the daily cap was passed. Use `status` to inspect. |
 | `signup_velocity_exceeded` | Too many signups from one IP — set `PROXY_FILE` (or `PROXY_URLS`) + `PROXY_PER_ACCOUNT=1`. Note: `PROXY_FILE` is for account traffic; `SOLVER_PROXY_FILE` is a different setting for the captcha solver only. |
 | Turnstile solves all time out | The solve IP is flagged — wait ~30 min, or raise `SOLVER_SOLVE_DELAY`, or use residential proxies. |
-| TUI looks blank | Press `m` for the menu, `2` for accounts, `p` to refresh stats. |
 | `report` shows 0 zaps | Stats are cached; add `--refresh` to poll the server. |
 
 ---
@@ -447,7 +422,6 @@ src/conso/
   scheduler.py                daily earn loop (resumable ledger)
   orchestrator.py             one-shot register -> earn -> loop chain
   ui.py                       Rich CLI output (banner, logs, summary, tables)
-  tui/                        Textual dashboard (banner / events / state / app)
   cli.py                      typer CLI (16 subcommands)
   config.py                   env/.env settings
 scripts/                      setup_internal_solver.sh, setup/start_solver.sh (sidecar),
@@ -455,7 +429,6 @@ scripts/                      setup_internal_solver.sh, setup/start_solver.sh (s
 analysis/                     RE report, schema, solver studies, probes
 extension_original/           downloaded CRX + unpacked extension (gitignored)
 data/                         accounts.json / accounts.csv / state.json (gitignored)
-docs/img/                     TUI screenshots
 ```
 
 ---

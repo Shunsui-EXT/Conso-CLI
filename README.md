@@ -74,20 +74,25 @@ source .venv/bin/activate          # Windows (WSL): source .venv/bin/activate
 pip install -r requirements.txt
 
 # 4. Captcha solver — internal Camoufox (recommended)
-pip install 'camoufox[geoip]>=0.4.0'
-pip install 'playwright==1.60'     # MUST be 1.60 to match the Camoufox browser
-python -m camoufox fetch           # downloads the stealth browser (~1.5 GB, one time)
+bash scripts/setup_internal_solver.sh
+#   This installs camoufox + playwright==1.60, fetches the stealth browser
+#   (~1.5 GB, one time), and verifies it launches.
+#   Manual equivalent:
+#     pip install 'camoufox[geoip]>=0.4.0'
+#     pip install 'playwright==1.60'   # MUST be 1.60 to match the browser
+#     python -m camoufox fetch
 
 # 5. Config
 cp .env.example .env               # defaults already work
 
 # 6. Verify
 python main.py doctor              # shows solver mode + browser report
+python main.py solve               # solves one Turnstile (proves the solver)
 python main.py test                # backend reachability + economy sanity
 ```
 
 If step 6 prints `supabase: http=200` and `auth gate: ... captcha_failed`, you
-are ready.
+are ready. `python main.py solve` should print a token (`solved: token_len=...`).
 
 > **No `PYTHONPATH` needed.** `main.py` adds `src/` to the import path itself.
 >
@@ -345,6 +350,35 @@ from the api.js `onload` callback; the resulting token is accepted by Conso.
 that pass Conso's email allowlist (disposable domains like mail.tm / ncaori are
 blocked).
 
+### Captcha solver setup (internal)
+
+The default solver runs **Camoufox** (a stealth Firefox) in-process — no sidecar
+service. One-time setup:
+
+```bash
+bash scripts/setup_internal_solver.sh
+```
+
+That script:
+1. `pip install 'camoufox[geoip]>=0.4.0'`
+2. `pip install 'playwright==1.60'` (pinned — see below)
+3. `python -m camoufox fetch` (downloads the stealth browser, ~1.5 GB, one time)
+4. launches it once to verify
+
+Then confirm it can solve:
+
+```bash
+python main.py solve      # -> solved: token_len=730 token=1.xxxx...
+```
+
+**If you prefer a managed captcha API** (browser-free, paid) instead of the
+local browser, set `CAPTCHA_PROVIDER=capsolver` (or `2captcha`) and add the API
+key in `.env`. No Camoufox download needed in that case.
+
+**If you prefer the CloakBrowser sidecar** (Chromium, separate process):
+`bash scripts/setup_solver.sh && bash scripts/start_solver.sh`, then
+`CAPTCHA_PROVIDER=service`.
+
 ---
 
 ## Limits & anti-abuse
@@ -369,7 +403,7 @@ blocked).
 | Symptom | Cause / fix |
 |---|---|
 | `ModuleNotFoundError: No module named 'conso'` | Run from the repo root (`python main.py ...`). `main.py` adds `src/` itself. |
-| `Camoufox is not installed` | `pip install 'camoufox[geoip]>=0.4.0' && python -m camoufox fetch`. |
+| `Camoufox is not installed` | `bash scripts/setup_internal_solver.sh` (installs + fetches). |
 | Solve hangs / re-downloads every launch | Playwright version mismatch — `pip install 'playwright==1.60'`. |
 | `captcha_failed` on `test` | Expected — the captcha gate is active; the solver handles it. |
 | `email_domain_not_allowed` on signup | temp.tf stopped giving allowed domains; try `TEMPTF_PROVIDER=outlook`. |
@@ -406,7 +440,8 @@ src/conso/
   tui/                        Textual dashboard (banner / events / state / app)
   cli.py                      typer CLI (16 subcommands)
   config.py                   env/.env settings
-scripts/                      solver setup/start, parallel register, fetch extension
+scripts/                      setup_internal_solver.sh, setup/start_solver.sh (sidecar),
+                              parallel_register.sh, fetch_extension.sh, solver_watchdog.sh
 analysis/                     RE report, schema, solver studies, probes
 extension_original/           downloaded CRX + unpacked extension (gitignored)
 data/                         accounts.json / accounts.csv / state.json (gitignored)

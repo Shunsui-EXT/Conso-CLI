@@ -478,9 +478,22 @@ python main.py solve      # -> solved: token_len=730 token=1.xxxx...
 local browser, set `CAPTCHA_PROVIDER=capsolver` (or `2captcha`) and add the API
 key in `.env`. No Camoufox download needed in that case.
 
-**If you prefer the CloakBrowser sidecar** (Chromium, separate process):
+**The CloakBrowser sidecar** (Chromium, separate process on `:8877`) is
+supported but slower and less consistent. Measured head-to-head with
+`scripts/bench_solver.py` (2 solves each, equal pacing):
+
+| provider | success | avg | min | max |
+|---|---|---|---|---|
+| `internal` (Camoufox, in-process) | 2/2 | **36.6s** | 31.2s | **42.1s** |
+| `service` (Chromium sidecar `:8877`) | 2/2 | 134.3s | 57.3s | **211.3s** |
+
+Prefer `internal`. To use the sidecar anyway:
 `bash scripts/setup_solver.sh && bash scripts/start_solver.sh`, then
-`CAPTCHA_PROVIDER=service`.
+`CAPTCHA_PROVIDER=service`. Benchmark both on your own machine with:
+
+```bash
+python scripts/bench_solver.py --runs 3 --delay 20
+```
 
 ---
 
@@ -544,6 +557,7 @@ src/conso/
   cli.py                      typer CLI (16 subcommands)
   config.py                   env/.env settings
 scripts/                      setup_internal_solver.sh, setup/start_solver.sh (sidecar),
+                              bench_solver.py (compare solver providers),
                               parallel_register.sh, fetch_extension.sh, solver_watchdog.sh
 analysis/                     RE report, schema, solver studies, probes
 extension_original/           downloaded CRX + unpacked extension (gitignored)

@@ -21,7 +21,7 @@ import typer
 
 from . import economy
 from . import ui
-from .captcha import TURNSTILE_PAGE_URL, TURNSTILE_SITEKEY, build_solver
+from .captcha import TURNSTILE_PAGE_URL, TURNSTILE_SITEKEY, build_solver, ensure_solver_ready
 from .client import ConsoAPIError, ConsoClient
 from .config import Settings
 from .earnings import MISSIONS, run_earnings
@@ -147,6 +147,7 @@ def register(
     ui.banner("register", solver=type(solver).__name__, verifier=type(verifier).__name__,
               proxy=f"{len(settings.proxy.urls)} proxies" if settings.proxy.urls else "direct",
               extra={"count": str(count), "referral": referral_code or "-"})
+    ensure_solver_ready(logger=_log)
     results = run_registration(
         settings, count, referral_code=referral_code, store=store,
         verifier=verifier, solver=solver, logger=_log,
@@ -435,6 +436,8 @@ def loop(
     signal.signal(signal.SIGINT, _handle)
     signal.signal(signal.SIGTERM, _handle)
 
+    ensure_solver_ready(logger=_log)
+
     ui.banner("loop", solver=type(solver).__name__,
               proxy=f"{len(settings.proxy.urls)} proxies" if settings.proxy.urls else "direct",
               extra={"turns": str(turns), "interval": f"{interval_hours}h",
@@ -598,6 +601,7 @@ def pipeline(
         solver_concurrent=solver_concurrent,
     )
     orch = Orchestrator(settings, config=config, logger=_log)
+    ensure_solver_ready(logger=_log)
 
     def _handle(signum, frame):  # noqa: ANN001, ARG001
         _log("pipeline: stop requested")

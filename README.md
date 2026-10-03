@@ -352,8 +352,15 @@ blocked).
 
 ### Captcha solver setup (internal)
 
-The default solver runs **Camoufox** (a stealth Firefox) in-process — no sidecar
-service. One-time setup:
+**The solver starts automatically.** Every run (`register`, `pipeline`, `loop`)
+calls `ensure_solver_ready()` first, which:
+- for `internal` — **warms the embedded Camoufox browser** before the first
+  account, so the first solve is fast (no launch latency mid-run);
+- for `service` — checks the sidecar health and **starts it automatically** via
+  `scripts/start_solver.sh` if it is not running;
+- for managed APIs / `none` — nothing to start.
+
+You only need this one-time install (the browser binary):
 
 ```bash
 bash scripts/setup_internal_solver.sh
@@ -407,6 +414,7 @@ key in `.env`. No Camoufox download needed in that case.
 | Solve hangs / re-downloads every launch | Playwright version mismatch — `pip install 'playwright==1.60'`. |
 | `captcha_failed` on `test` | Expected — the captcha gate is active; the solver handles it. |
 | `email_domain_not_allowed` on signup | temp.tf stopped giving allowed domains; try `TEMPTF_PROVIDER=outlook`. |
+| Turnstile solves all time out (`rate-flagged`) | The solve IP is flagged by Cloudflare — wait ~30 min, raise `SOLVER_SOLVE_DELAY`, use residential proxies, or switch to `CAPTCHA_PROVIDER=capsolver` / `2captcha`. |
 | `account_banned` | A turn was submitted before onboarding, or the daily cap was passed. Use `status` to inspect. |
 | `signup_velocity_exceeded` | Too many signups from one IP — set `PROXY_FILE` + `PROXY_PER_ACCOUNT=1`. |
 | Turnstile solves all time out | The solve IP is flagged — wait ~30 min, or raise `SOLVER_SOLVE_DELAY`, or use residential proxies. |

@@ -421,12 +421,28 @@ class InternalSolverAdapter:
         self._real_page = real_page
         self._max_concurrent = int(os.environ.get("SOLVER_MAX_CONCURRENT", "2") or 2)
 
-    def solve_turnstile(self, *, sitekey: str = TURNSTILE_SITEKEY,
-                        page_url: str = TURNSTILE_PAGE_URL, timeout: float = 120.0) -> str:
-        solver = self._get(
-            headless=self._headless, timeout_seconds=int(timeout),
+    def _solver(self):
+        return self._get(
+            headless=self._headless, timeout_seconds=int(self._timeout),
             max_concurrent=self._max_concurrent,
         )
+
+    def warm(self, *, timeout: float = 60.0) -> bool:
+        """Pre-start the embedded browser so the first solve is fast."""
+        try:
+            return self._solver().warm(timeout=timeout)
+        except Exception:
+            return False
+
+    def warm_async(self):
+        try:
+            return self._solver().warm_async()
+        except Exception:
+            return None
+
+    def solve_turnstile(self, *, sitekey: str = TURNSTILE_SITEKEY,
+                        page_url: str = TURNSTILE_PAGE_URL, timeout: float = 120.0) -> str:
+        solver = self._solver()
         # The Conso verify-human page needs a whitelisted redirect_uri to render.
         if "redirect_uri=" not in page_url:
             sep = "&" if "?" in page_url else "?"
@@ -484,3 +500,80 @@ def build_solver(transport: Transport) -> CaptchaSolver:
     if provider == "manual":
         return ManualSolver()
     return NoopSolver(os.environ.get("CAPTCHA_TOKEN", ""))
+
+
+def ensure_solver_ready(*, logger=None) -> bool:
+    """Make sure the configured captcha solver is up before a run starts.
+
+    - internal: warm the embedded Camoufox browser (starts it now so the first
+      solve is fast).
+    - service : if the sidecar at SOLVER_URL is not answering, start it via
+      scripts/start_solver.sh (detached) and wait for health.
+    - managed APIs / none / manual: nothing to start.
+
+    Returns True if the solver looks ready. Never raises.
+    """
+    import subprocess
+
+    def _log(msg: str) -> None:
+        if logger:
+            logger(msg)
+
+    provider = os.environ.get("CAPTCHA_PROVIDER", "none").strip().lower()
+    if provider == "internal":
+        try:
+            from .internal_solver import InternalTurnstileSolver, get_default_solver
+
+            if not InternalTurnstileSolver.is_available():
+                _log("solver: camoufox not installed — run scripts/setup_internal_solver.sh")
+                return False
+            _log("solver: warming Camoufox browser ...")
+            ok = get_default_solver().warm(timeout=90)
+            _log("solver: Camoufox ready" if ok else "solver: Camoufox warm failed (will retry on solve)")
+            return ok
+        except Exception as exc:  # noqa: BLE001
+            _log(f"solver: internal warm error: {exc}")
+            return False
+
+    if provider == "service":
+        url = os.environ.get("SOLVER_URL", "http://127.0.0.1:8877").rstrip("/")
+        if _sidecar_alive(url):
+            _log("solver: sidecar already running")
+            return True
+        script = os.path.join(_repo_root(), "scripts", "start_solver.sh")
+        if not os.path.exists(script):
+            _log("solver: sidecar script missing — run scripts/setup_solver.sh")
+            return False
+        _log("solver: starting sidecar ...")
+        try:
+            subprocess.Popen(["bash", script],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                             start_new_session=True)
+        except Exception as exc:  # noqa: BLE001
+            _log(f"solver: sidecar start failed: {exc}")
+            return False
+        for _ in range(30):
+            if _sidecar_alive(url):
+                _log("solver: sidecar ready")
+                return True
+            time.sleep(1)
+        _log("solver: sidecar did not become healthy")
+        return False
+
+    return True  # managed API / none / manual need no startup
+
+
+def _repo_root() -> str:
+    import os.path as _p
+
+    return _p.dirname(_p.dirname(_p.dirname(_p.abspath(__file__))))
+
+
+def _sidecar_alive(url: str) -> bool:
+    import urllib.request
+
+    try:
+        with urllib.request.urlopen(f"{url}/health", timeout=3) as r:
+            return r.status == 200
+    except Exception:
+        return False

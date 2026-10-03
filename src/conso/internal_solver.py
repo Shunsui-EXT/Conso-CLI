@@ -96,6 +96,26 @@ class InternalTurnstileSolver:
     def ready(self) -> bool:
         return self._browser is not None and not self._closed
 
+    def warm(self, timeout: float = 60.0) -> bool:
+        """Start the browser ahead of the first solve (blocks until ready).
+
+        Calling this before a run removes the first-solve latency (browser
+        launch + api.js load). Returns True once the browser is up.
+        """
+        if self.ready:
+            return True
+        try:
+            self._submit(self._ensure_browser(), timeout=timeout)
+            return self.ready
+        except Exception:
+            return False
+
+    def warm_async(self) -> threading.Thread:
+        """Warm the browser on a background thread (non-blocking)."""
+        t = threading.Thread(target=self.warm, name="conso-solver-warm", daemon=True)
+        t.start()
+        return t
+
     @staticmethod
     def is_available() -> bool:
         try:
@@ -261,7 +281,9 @@ class InternalTurnstileSolver:
                     await asyncio.sleep(0.3)
 
                 raise InternalSolverError(
-                    f"embedded Turnstile solve timed out after {timeout_seconds}s"
+                    f"embedded Turnstile solve timed out after {timeout_seconds}s "
+                    f"(the solve IP is probably rate-flagged by Cloudflare — wait ~30 min, raise SOLVER_SOLVE_DELAY, use residential proxies, or switch to "
+                    f"CAPTCHA_PROVIDER=capsolver/2captcha)"
                 )
             finally:
                 try:

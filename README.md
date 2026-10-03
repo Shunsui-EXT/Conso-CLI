@@ -120,8 +120,10 @@ Camoufox solver). The values you may want to change:
 | `SOLVER_MAX_CONCURRENT` | `8` | Camoufox solve concurrency (8 is the measured sweet spot). |
 | `SOLVER_SOLVE_DELAY` | `5` | Seconds between solves (keeps the IP from being flagged). |
 | `DEFAULT_REFERRAL_CODE` | *(empty)* | Referral applied to every new account. |
-| `PROXY_FILE` | *(empty)* | Path to a proxy list (one `http://user:pass@host:port` per line). |
+| `PROXY_URLS` | *(empty)* | Inline proxy list (comma-separated HTTP/SOCKS5 URLs). |
+| `PROXY_FILE` | *(empty)* | Path to a proxy file (one `http://user:pass@host:port` per line). Used when `PROXY_URLS` is empty. |
 | `PROXY_PER_ACCOUNT` | `1` | Pin one proxy per account (spreads the signup-velocity limit). |
+| `SOLVER_PROXY_FILE` | *(empty)* | Proxy for the **captcha solver only** (separate from `PROXY_FILE`). Leave empty normally. |
 | `MIN_DELAY_SECONDS` / `MAX_DELAY_SECONDS` | `20` / `60` | Jittered pacing between turns on one account. |
 
 You do **not** need to touch `SUPABASE_URL` / `SUPABASE_KEY` — they are the
@@ -416,7 +418,7 @@ key in `.env`. No Camoufox download needed in that case.
 | `email_domain_not_allowed` on signup | temp.tf stopped giving allowed domains; try `TEMPTF_PROVIDER=outlook`. |
 | Turnstile solves all time out (`rate-flagged`) | The solve IP is flagged by Cloudflare — wait ~30 min, raise `SOLVER_SOLVE_DELAY`, use residential proxies, or switch to `CAPTCHA_PROVIDER=capsolver` / `2captcha`. |
 | `account_banned` | A turn was submitted before onboarding, or the daily cap was passed. Use `status` to inspect. |
-| `signup_velocity_exceeded` | Too many signups from one IP — set `PROXY_FILE` + `PROXY_PER_ACCOUNT=1`. |
+| `signup_velocity_exceeded` | Too many signups from one IP — set `PROXY_FILE` (or `PROXY_URLS`) + `PROXY_PER_ACCOUNT=1`. Note: `PROXY_FILE` is for account traffic; `SOLVER_PROXY_FILE` is a different setting for the captcha solver only. |
 | Turnstile solves all time out | The solve IP is flagged — wait ~30 min, or raise `SOLVER_SOLVE_DELAY`, or use residential proxies. |
 | TUI looks blank | Press `m` for the menu, `2` for accounts, `p` to refresh stats. |
 | `report` shows 0 zaps | Stats are cached; add `--refresh` to poll the server. |

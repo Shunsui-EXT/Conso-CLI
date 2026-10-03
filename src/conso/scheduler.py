@@ -25,7 +25,8 @@ from typing import Callable
 from .client import ConsoAPIError, ConsoClient
 from .config import Settings
 from .earnings import run_earnings
-from .limits import get_daily_status
+from .constants import DAILY_ZAP_CAP
+from .limits import daily_headroom, get_daily_status
 from .pipeline import farm_turns_for_account
 from .session import SessionManager
 from .storage import AccountRecord, Store
@@ -55,6 +56,11 @@ class LoopConfig:
     max_cycles: int = 0                 # 0 = run forever
     daily_cap: float = 0.0              # 0 = no cap
     parallel_workers: int = 1           # accounts farmed concurrently
+    # Skip farming an account whose remaining daily budget is below this. An
+    # account at 20.83/21 still accepts turns, but each one is sized down to
+    # ~0.02 zaps, so filling the last fraction costs a dozen requests for
+    # nothing. 0 disables the skip.
+    min_remaining_zaps: float = 1.0
 
 
 @dataclass
@@ -154,8 +160,29 @@ class DailyLoop:
                 summary = run_earnings(client, logger=self.logger)
                 info["missions"] = summary.zaps_earned
                 before = summary.total_zaps_after or before
+                # Missions add to the daily counter, so fold them in before
+                # deciding whether there is anything left worth farming.
+                if status:
+                    status.daily_zaps_earned += summary.zaps_earned
         finally:
             client.close()
+
+        # Skip accounts that are effectively full. At 20.83/21 the server still
+        # accepts turns but sizes each one down to ~0.02 zaps, so closing the
+        # last fraction costs a dozen requests and adds nothing.
+        threshold = self.config.min_remaining_zaps
+        if threshold > 0 and status:
+            left = daily_headroom(status, DAILY_ZAP_CAP)
+            if left is not None and left < threshold:
+                _log(self.logger, f"loop: {record.email} skip farm "
+                                  f"(headroom {left:.2f} < {threshold:.2f})")
+                _emit("ACCOUNT_STAGE", email=record.email, stage="capped")
+                info["status"] = "capped"
+                info["reason"] = f"headroom={left:.2f}"
+                self._mark_done(day, record.email, info)
+                _emit("ACCOUNT_COMPLETED", email=record.email, zaps=info["zaps"],
+                      proxy=record.proxy or "")
+                return info
 
         _emit("ACCOUNT_STAGE", email=record.email, stage="farm")
         ok, farmed = farm_turns_for_account(

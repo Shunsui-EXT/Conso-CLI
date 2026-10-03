@@ -130,6 +130,7 @@ Camoufox solver). The values you may want to change:
 | `PROXY_PER_ACCOUNT` | `1` | Pin one proxy per account (spreads the signup-velocity limit). |
 | `SOLVER_PROXY_FILE` | *(empty)* | Proxy for the **captcha solver only** (separate from `PROXY_FILE`). Leave empty normally. |
 | `MIN_DELAY_SECONDS` / `MAX_DELAY_SECONDS` | `20` / `60` | Jittered pacing between turns on one account. |
+| `MIN_REMAINING_ZAPS` | `1.0` | Skip farming an account with less than this daily headroom (`0` disables). |
 | `REGISTER_MIN_DELAY_SECONDS` / `REGISTER_MAX_DELAY_SECONDS` | `2` / `6` | Jittered pacing between signups (registration only). |
 | `SOLVER_SERIAL` | `1` | Serialise solves process-wide (see [Parallelism](#parallelism)). |
 
@@ -214,7 +215,7 @@ its flags.
 | `report` | Headless status (`--fmt table\|json\|csv`, `--refresh`) |
 | `farm` | Missions + synthetic turns (`--turns`, `--email`, `--earn/--no-earn`) |
 | `earn` | Claim missions/codes (`--list`, `--referral`, `--access`, `--missions`) |
-| `loop` | Recurring daily cycle (`--once`, `--interval-hours`, `--workers`, `--daily-cap`) |
+| `loop` | Recurring daily cycle (`--once`, `--interval-hours`, `--workers`, `--daily-cap`, `--min-remaining`) |
 | `session` | Show/refresh stored sessions without re-login (`--force`) |
 | `recover` | Refresh → password → email OTP recovery (`--email`) |
 | `status` | Daily-limit / earning state per account (`--email`) |
@@ -246,6 +247,17 @@ python main.py loop --interval-hours 24   # run every 24h (Ctrl-C to stop)
 
 Each cycle claims missions and fills the daily zap budget for every account,
 resuming safely across restarts (it records what already ran in `state.json`).
+
+Accounts that are effectively full are skipped instead of farmed. At 20.83/21 the
+server still accepts turns but sizes each one down to ~0.02 zaps, so closing the
+last fraction used to cost a dozen requests for nothing:
+
+```bash
+python main.py loop --once --min-remaining 1.0   # skip if < 1 zap left
+MIN_REMAINING_ZAPS=1.0                           # or set it in .env
+```
+
+`--min-remaining 0` disables the skip and farms every account to the exact cap.
 
 ### C. Check everything is healthy
 

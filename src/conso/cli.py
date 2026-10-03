@@ -12,6 +12,7 @@ Subcommands:
 from __future__ import annotations
 
 import json
+import os
 import random
 import sys
 import threading
@@ -428,6 +429,9 @@ def loop(
     daily_cap: float = typer.Option(0.0, help="Stop an account at this daily zaps (0 = off)."),
     email: str = typer.Option("", help="Only run this account (empty = all)."),
     workers: int = typer.Option(1, help="Farm this many accounts concurrently (HTTP-only)."),
+    min_remaining: float = typer.Option(
+        -1.0, "--min-remaining",
+        help="Skip farming an account with less than this daily headroom (0 = off, -1 = .env)."),
 ) -> None:
     """Run the daily earn cycle (missions + turns) on a schedule."""
     import signal
@@ -442,6 +446,10 @@ def loop(
         max_cycles=1 if once else cycles,
         daily_cap=daily_cap,
         parallel_workers=workers,
+        min_remaining_zaps=(
+            min_remaining if min_remaining >= 0
+            else float(os.environ.get("MIN_REMAINING_ZAPS", "1.0") or 0.0)
+        ),
     )
     runner = DailyLoop(settings, store, config=config, solver=solver,
                        verifier=build_verifier(settings), logger=_mirror(_log))

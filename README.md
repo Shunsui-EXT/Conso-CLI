@@ -5,9 +5,11 @@ Chrome extension (v0.1.4.0). It talks directly to the Conso backend (Supabase +
 `conso.xyz`) — API-first, no browser needed for the account/turn logic.
 
 It can **provision accounts**, **earn zaps** (missions + synthetic AI-usage
-turns), **keep sessions alive**, and **run on a schedule** — all from the CLI
-with a Rich (non-interactive) output. No TUI, no curses: every command prints
-and exits, so it runs fine over SSH, in cron, or inside systemd.
+turns), **keep sessions alive**, and **run on a schedule** — all from the CLI.
+While a run is active it renders a **single live panel** (header + progress +
+zaps + log tail) and prints a summary when it finishes. There is no curses app,
+no keybindings and no screen to navigate, so it runs fine over SSH, in cron, or
+inside systemd.
 
 > **Scope / disclaimer.** This is a reverse-engineering research tool that
 > automates a third-party service. It is published for research and educational
@@ -27,10 +29,11 @@ and exits, so it runs fine over SSH, in cron, or inside systemd.
 7. [CLI reference](#cli-reference)
 8. [Common workflows](#common-workflows)
 9. [How it works](#how-it-works)
-10. [Captcha solver](#captcha-solver)
-11. [Limits & anti-abuse](#limits--anti-abuse)
-12. [Troubleshooting](#troubleshooting)
-13. [License](#license)
+10. [Live monitor](#live-monitor)
+11. [Captcha solver](#captcha-solver)
+12. [Limits & anti-abuse](#limits--anti-abuse)
+13. [Troubleshooting](#troubleshooting)
+14. [License](#license)
 
 ---
 
@@ -42,7 +45,7 @@ and exits, so it runs fine over SSH, in cron, or inside systemd.
 | **Earn** | `earn` / `farm` | Claims daily/bonus missions and submits synthetic AI-usage turns for zaps |
 | **Keep alive** | `session` / `recover` | Reuses/refreshes sessions without re-login; recovers via email OTP |
 | **Automate** | `loop` / `pipeline` | Recurring daily cycle, or a one-shot register→earn chain |
-| **Monitor** | `report` | Headless one-shot status (table / json / csv) |
+| **Monitor** | (live) / `report` | Live single-panel output during a run, or a one-shot status table |
 
 ---
 
@@ -173,22 +176,23 @@ captcha gate is live and your solver will be exercised.
 python main.py pipeline --register 1 --earn
 ```
 
-You should see a banner, coloured logs, and a summary panel:
+You should see the [live monitor](#live-monitor) panel while it runs, then a
+summary panel at the end:
 
 ```
-╭────────────────────────── CONSO FARM  ·  pipeline ──────────────────────────╮
-│ solver internal x16  verifier temptf  proxy 100 proxies  register 1 ...     │
-╰─────────────────────────────────────────────────────────────────────────────╯
-05:12:04  pipeline: registering 1 account(s)
-05:12:18  register: xxx@gmail.com captcha solved
-05:12:26  register: xxx@gmail.com got code 123456
-05:12:27  [active] xxx@gmail.com :: registered
-...
+22:48:01  farm: mansurkurtaran5+x@gmail.com daily budget filled (21.00)
+22:48:01  register: mansurkurtaran5+x@gmail.com earned +21.0 zaps (status=ok)
 ╭─────────────────────────────── PIPELINE DONE ───────────────────────────────╮
 │ registered    1                                                             │
 │ active        1                                                             │
-│ earned zaps   12.07                                                         │
+│ earned zaps   21.0                                                          │
 ╰─────────────────────────────────────────────────────────────────────────────╯
+```
+
+Redirect to a file and the panel is dropped automatically — you get plain logs:
+
+```bash
+python main.py pipeline --register 1 --earn > run.log 2>&1
 ```
 
 ---
@@ -293,6 +297,44 @@ from the api.js `onload` callback; the resulting token is accepted by Conso.
 `temp.tf` provides real `gmail.com` / `outlook.com` / `hotmail.com` plus-aliases
 that pass Conso's email allowlist (disposable domains like mail.tm / ncaori are
 blocked).
+
+## Live monitor
+
+`register`, `pipeline` and `loop` render one panel that refreshes in place.
+It is not interactive — you never press anything; the run feeds it.
+
+```
+╭──────────────────────────────────────────────────────────────────────────╮
+│  ██████╗ ██████╗ ███╗   ██╗███████╗ ██████╗                             │
+│ ██╔════╝██╔═══██╗████╗  ██║██╔════╝██╔═══██╗   conso automation pipeline│
+│ ██║     ██║   ██║██╔██╗ ██║███████╗██║   ██║   mode: register           │
+│ ██║     ██║   ██║██║╚██╗██║╚════██║██║   ██║   * RUNNING                │
+│ ╚██████╗╚██████╔╝██║ ╚████║███████║╚██████╔╝                            │
+│  ╚═════╝ ╚═════╝ ╚═╝  ╚═══╝╚══════╝ ╚═════╝                             │
+│   phase captcha   elapsed 01:24   zaps 12.4   rate 8.9/min               │
+│   [##################..........] 5/8  62%  eta 00:51                     │
+│   ok 5  fail 0  accounts 8                                               │
+│                                                                          │
+│   + mansurkurtaran5+x@gmail.com captcha solved                           │
+│   . mansurkurtaran5+x@gmail.com got code 123456                          │
+╰──────────────────────────────────────────────────────────────────────────╯
+```
+
+What each row means:
+
+| Row | Meaning |
+|---|---|
+| header | ASCII logo + tagline + `mode` (register / pipeline / loop) + status dot |
+| `phase` | current stage of the run: `captcha` → `signup` → `otp` → `create` → `referral` → `consoname` → `missions` → `farm` |
+| progress | completed/target, percent, ETA from item throughput |
+| stats | `ok` / `fail` counts and the account target |
+| log tail | last 6 events, coloured (`+` ok, `.` info, `!` warn, `-` fail) |
+
+If stdout is not a terminal (cron, CI, a pipe) the panel is skipped and only
+plain log lines are printed, so `python main.py loop --once > run.log` stays
+readable.
+
+---
 
 ## Captcha solver
 
@@ -422,6 +464,7 @@ src/conso/
   scheduler.py                daily earn loop (resumable ledger)
   orchestrator.py             one-shot register -> earn -> loop chain
   ui.py                       Rich CLI output (banner, logs, summary, tables)
+  monitor.py                  live single-panel monitor (header + progress + log tail)
   cli.py                      typer CLI (16 subcommands)
   config.py                   env/.env settings
 scripts/                      setup_internal_solver.sh, setup/start_solver.sh (sidecar),

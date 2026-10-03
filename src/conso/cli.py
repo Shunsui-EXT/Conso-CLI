@@ -22,6 +22,7 @@ import typer
 from . import economy
 from . import ui
 from .captcha import TURNSTILE_PAGE_URL, TURNSTILE_SITEKEY, build_solver, ensure_solver_ready
+from .monitor import get_monitor, start_monitor, stop_monitor
 from .client import ConsoAPIError, ConsoClient
 from .config import Settings
 from .earnings import MISSIONS, run_earnings
@@ -42,6 +43,16 @@ _print_lock = threading.Lock()
 def _log(message: str) -> None:
     with _print_lock:
         ui.log(message, level=ui.classify(message))
+
+
+def _mirror(logger):
+    """Wrap a logger so lines also land in the live monitor's log tail."""
+    def _fn(message: str) -> None:
+        logger(message)
+        mon = get_monitor()
+        if mon is not None:
+            mon.log(message, level=ui.classify(message))
+    return _fn
 
 
 @app.command()
@@ -148,10 +159,14 @@ def register(
               proxy=f"{len(settings.proxy.urls)} proxies" if settings.proxy.urls else "direct",
               extra={"count": str(count), "referral": referral_code or "-"})
     ensure_solver_ready(logger=_log)
-    results = run_registration(
-        settings, count, referral_code=referral_code, store=store,
-        verifier=verifier, solver=solver, logger=_log,
-    )
+    start_monitor("register", target=count)
+    try:
+        results = run_registration(
+            settings, count, referral_code=referral_code, store=store,
+            verifier=verifier, solver=solver, logger=_mirror(_log),
+        )
+    finally:
+        stop_monitor("DONE")
     ok = sum(1 for r in results if r.status == "active")
     failed = len(results) - ok
     ui.summary("REGISTER DONE", [
@@ -162,17 +177,21 @@ def register(
 
     if earn and ok:
         _log(f"register: --earn set, farming {ok} new account(s)")
-        runner = DailyLoop(settings, store, config=LoopConfig(turns=turns),
-                           solver=solver, verifier=verifier, logger=_log)
-        for r in results:
-            if r.status != "active":
-                continue
-            record = next((a for a in store.all() if a.email == r.email), None)
-            if record is None:
-                continue
-            info = runner.run_account(record)
-            _log(f"register: {r.email} earned +{info.get('zaps', 0)} zaps "
-                 f"(status={info.get('status')})")
+        start_monitor("register+earn", target=ok)
+        try:
+            runner = DailyLoop(settings, store, config=LoopConfig(turns=turns),
+                               solver=solver, verifier=verifier, logger=_mirror(_log))
+            for r in results:
+                if r.status != "active":
+                    continue
+                record = next((a for a in store.all() if a.email == r.email), None)
+                if record is None:
+                    continue
+                info = runner.run_account(record)
+                _log(f"register: {r.email} earned +{info.get('zaps', 0)} zaps "
+                     f"(status={info.get('status')})")
+        finally:
+            stop_monitor("DONE")
 
 
 @app.command()
@@ -425,7 +444,7 @@ def loop(
         parallel_workers=workers,
     )
     runner = DailyLoop(settings, store, config=config, solver=solver,
-                       verifier=build_verifier(settings), logger=_log)
+                       verifier=build_verifier(settings), logger=_mirror(_log))
     if email:
         runner.only_emails = {email}
 
@@ -438,18 +457,20 @@ def loop(
 
     ensure_solver_ready(logger=_log)
 
-    ui.banner("loop", solver=type(solver).__name__,
-              proxy=f"{len(settings.proxy.urls)} proxies" if settings.proxy.urls else "direct",
-              extra={"turns": str(turns), "interval": f"{interval_hours}h",
-                     "accounts": str(len(store.all()))})
+    start_monitor("loop", target=len(store.all()))
+    try:
+        if once:
+            result = runner.run_cycle(force=force)
+        else:
+            runner.run_forever()
+    finally:
+        stop_monitor("DONE")
     if once:
-        result = runner.run_cycle(force=force)
         ui.summary("LOOP DONE", [
             ("zaps", round(result.zaps, 2)),
             ("accounts", len(result.per_account)),
         ], color="green")
     else:
-        runner.run_forever()
         ui.log("loop stopped", level="warn")
 
 
@@ -600,7 +621,7 @@ def pipeline(
         workers=workers, daily_cap=daily_cap, only_new=only_new,
         solver_concurrent=solver_concurrent,
     )
-    orch = Orchestrator(settings, config=config, logger=_log)
+    orch = Orchestrator(settings, config=config, logger=_mirror(_log))
     ensure_solver_ready(logger=_log)
 
     def _handle(signum, frame):  # noqa: ANN001, ARG001
@@ -610,10 +631,9 @@ def pipeline(
     signal.signal(signal.SIGINT, _handle)
     signal.signal(signal.SIGTERM, _handle)
 
-    ui.banner("pipeline", solver=f"internal x{settings.max_concurrency}",
-              verifier="temptf", proxy=f"{len(settings.proxy.urls)} proxies" if settings.proxy.urls else "direct",
-              extra={"register": str(register), "earn": str(earn), "loop": str(loop)})
+    start_monitor("pipeline", target=register)
     summary = orch.run()
+    stop_monitor("DONE" if not orch._stop.is_set() else "STOPPED")
     ui.summary("PIPELINE DONE", [
         ("registered", summary.get("registered", 0)),
         ("active", summary.get("active", 0)),

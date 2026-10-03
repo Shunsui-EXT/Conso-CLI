@@ -62,9 +62,21 @@ def _log(default: LogFn | None, message: str) -> None:
         default(message)
 
 
-def _emit(event_type_name: str, **data: Any) -> None:
-    """Event hook retained for call-site compatibility (no-op without the TUI)."""
-    return None
+def _emit(name: str, **data) -> None:
+    """Feed pipeline events to the live monitor (no-op when not attached)."""
+    mon = _get_monitor()
+    if mon is not None:
+        try:
+            mon.emit(name, **data)
+        except Exception:
+            pass
+
+
+def _get_monitor():
+    from .monitor import get_monitor
+
+    return get_monitor()
+
 
 
 def _wait_for_code(verifier: EmailVerifier, address: str, *, timeout: float) -> str | None:

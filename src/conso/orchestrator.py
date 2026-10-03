@@ -28,8 +28,20 @@ LogFn = Callable[[str], None]
 
 
 def _emit(name: str, **data) -> None:
-    """Event hook retained for call-site compatibility (no-op without the TUI)."""
-    return None
+    """Feed pipeline events to the live monitor (no-op when not attached)."""
+    mon = _get_monitor()
+    if mon is not None:
+        try:
+            mon.emit(name, **data)
+        except Exception:
+            pass
+
+
+def _get_monitor():
+    from .monitor import get_monitor
+
+    return get_monitor()
+
 
 
 @dataclass

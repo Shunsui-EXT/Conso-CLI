@@ -33,8 +33,9 @@ inside systemd.
 11. [Parallelism](#parallelism)
 12. [Captcha solver](#captcha-solver)
 13. [Limits & anti-abuse](#limits--anti-abuse)
-14. [Troubleshooting](#troubleshooting)
-15. [License](#license)
+14. [Split setup](#split-setup-register-locally-earn-remotely)
+15. [Troubleshooting](#troubleshooting)
+16. [License](#license)
 
 ---
 
@@ -232,6 +233,8 @@ its flags.
 | `session` | Show/refresh stored sessions without re-login (`--force`) |
 | `recover` | Refresh → password → email OTP recovery (`--email`) |
 | `scripts/fix_account.py` | Re-establish a session when the stored refresh token went stale (`--email`) |
+| `scripts/sync_accounts.sh` | Push `data/accounts.json` to the remote host that runs the daily cycle |
+| `scripts/install_cron.sh` | Install/remove the daily `loop --once` cron job (run it on the remote) |
 | `status` | Daily-limit / earning state per account (`--email`) |
 | `solve` | Solve one Turnstile challenge (sanity check) |
 | `proxies` | Health-check a proxy list (`--file`, `--limit`) |
@@ -540,6 +543,34 @@ python scripts/bench_solver.py --runs 3 --delay 20
 
 ---
 
+## Split setup: register locally, earn remotely
+
+Registration needs a residential IP; daily earning does not. So the cheap
+layout is: **register on your own machine, earn on a server.**
+
+```bash
+# 1. locally — create accounts (needs the captcha solver)
+python main.py register 8 --earn
+
+# 2. push the store to the remote
+SSH_HOST=ubuntu@1.2.3.4 SSH_KEY=~/.ssh/id_ed25519 bash scripts/sync_accounts.sh
+
+# 3. on the remote — install the daily cron (default 07:13 UTC)
+bash scripts/install_cron.sh                      # remove with --remove
+CRON_HOUR=3 WORKERS=4 bash scripts/install_cron.sh
+```
+
+The remote never touches Turnstile: `loop` reuses stored sessions and refreshes
+them, and refresh needs no captcha. Verified on an AWS host — 58 accounts
+processed, 0 banned, 0 failed.
+
+**Only one side may farm.** `data/accounts.json` holds *rotated* refresh
+tokens; if both machines run, each rotation invalidates the other's token. That
+is why `sync_accounts.sh` deliberately does **not** push `data/state.json` (the
+"already ran today" ledger) — each side keeps its own.
+
+---
+
 ## Troubleshooting
 
 | Symptom | Cause / fix |
@@ -586,6 +617,7 @@ src/conso/
   config.py                   env/.env settings
 scripts/                      setup_internal_solver.sh, setup/start_solver.sh (sidecar),
                               fix_account.py (re-establish a stale session),
+                              sync_accounts.sh (push store), install_cron.sh (daily cron),
                               bench_solver.py (compare solver providers),
                               parallel_register.sh, fetch_extension.sh, solver_watchdog.sh
 analysis/                     RE report, schema, solver studies, probes

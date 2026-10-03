@@ -503,6 +503,22 @@ def doctor() -> None:
 
     _log(f"doctor: CAPTCHA_PROVIDER={provider} "
          f"browser_free={provider in browser_free_providers}")
+    if provider == "internal":
+        # Check the internal solver is actually usable (installed + browser fetched).
+        camoufox_ok = _ilu.find_spec("camoufox") is not None
+        browser_ok = False
+        if camoufox_ok:
+            try:
+                from .internal_solver import InternalTurnstileSolver
+
+                browser_ok = InternalTurnstileSolver.is_available()
+            except Exception:
+                browser_ok = False
+        if camoufox_ok and browser_ok:
+            _log("  internal solver: camoufox present — ready")
+        else:
+            _log("  [yellow]internal solver NOT ready[/yellow] — run: "
+                 "bash scripts/setup_internal_solver.sh")
     if provider == "service":
         _log("  note: 'service' runs a local CloakBrowser sidecar — NOT browser-free")
         _log("  switch to CAPTCHA_PROVIDER=capsolver (or 2captcha) for full HTTP")

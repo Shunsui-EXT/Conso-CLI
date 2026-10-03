@@ -60,6 +60,19 @@ inside systemd.
 
 Everything else installs via `pip`.
 
+**On a fresh Debian/Ubuntu box**, two things are missing out of the box and will
+fail setup if you skip them. `scripts/setup_internal_solver.sh` installs the
+Firefox system libraries for you, but `venv` must exist before step 2:
+
+```bash
+sudo apt-get update -y
+sudo apt-get install -y python3-venv python3-pip
+```
+
+If `python3 -m venv .venv` reports `ensurepip is not available`, that is this
+step. If Camoufox fails to launch, the missing packages are
+`libgtk-3-0 libasound2t64 libdbus-glib-1-2 libxt6`.
+
 ---
 
 ## Setup (step by step)
@@ -536,6 +549,7 @@ python scripts/bench_solver.py --runs 3 --delay 20
 | `captcha_failed` on `test` | Expected — the captcha gate is active; the solver handles it. |
 | `email_domain_not_allowed` on signup | temp.tf stopped giving allowed domains; try `TEMPTF_PROVIDER=outlook`. |
 | Turnstile solves all time out (`rate-flagged`) | The solve IP is flagged by Cloudflare — wait ~30 min, raise `SOLVER_SOLVE_DELAY`, use residential proxies, or switch to `CAPTCHA_PROVIDER=capsolver` / `2captcha`. |
+| Solver works locally but never on my VPS | The VPS **own IP** is the problem, not the install. Cloudflare will not issue a challenge to hosting ASNs (measured: residential ASN 4761 solved, AWS ASN 16509 timed out even though `conso.xyz` and `challenges.cloudflare.com` both returned 200). Registration needs Capsolver/2Captcha or a residential proxy. **Daily earning still works** — it reuses stored sessions and never touches the captcha, so `loop --once` runs fine on a VPS with a copied `data/accounts.json`. |
 | `account_banned` | A turn was submitted before onboarding, or the daily cap was passed. Use `status` to inspect. |
 | `signup_velocity_exceeded` | Too many signups from one IP — set `PROXY_FILE` (or `PROXY_URLS`) + `PROXY_PER_ACCOUNT=1`. Note: `PROXY_FILE` is for account traffic; `SOLVER_PROXY_FILE` is a different setting for the captcha solver only. |
 | Turnstile solves all time out | The solve IP is flagged — wait ~30 min, or raise `SOLVER_SOLVE_DELAY`, or use residential proxies. |

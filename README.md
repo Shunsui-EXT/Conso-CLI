@@ -145,6 +145,8 @@ Camoufox solver). The values you may want to change:
 | `SOLVER_PROXY_FILE` | *(empty)* | Proxy for the **captcha solver only** (separate from `PROXY_FILE`). Leave empty normally. |
 | `MIN_DELAY_SECONDS` / `MAX_DELAY_SECONDS` | `20` / `60` | Jittered pacing between turns on one account. |
 | `MIN_REMAINING_ZAPS` | `1.0` | Skip farming an account with less than this daily headroom (`0` disables). |
+| `TELEGRAM_BOT_TOKEN` | *(empty)* | Bot token from @BotFather — enables run summaries over Telegram. |
+| `TELEGRAM_CHAT_ID` | *(empty)* | Target chat/channel id. Both must be set or nothing is sent. |
 | `REGISTER_MIN_DELAY_SECONDS` / `REGISTER_MAX_DELAY_SECONDS` | `2` / `6` | Jittered pacing between signups (registration only). |
 | `SOLVER_SERIAL` | `1` | Serialise solves process-wide (see [Parallelism](#parallelism)). |
 
@@ -240,6 +242,7 @@ its flags.
 | `proxies` | Health-check a proxy list (`--file`, `--limit`) |
 | `export` | Dump the account store (`--fmt csv\|json`) |
 | `verify` | Health-check the proxy pool |
+| `notify` | Send a Telegram test message (verifies bot token + chat id) |
 
 ---
 
@@ -564,6 +567,27 @@ The remote never touches Turnstile: `loop` reuses stored sessions and refreshes
 them, and refresh needs no captcha. Verified on an AWS host — 58 accounts
 processed, 0 banned, 0 failed.
 
+### Telegram reports
+
+Set `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` in `.env` and `register`,
+`pipeline` and `loop` will send a plain-text summary when they finish:
+
+```
+LOOP DONE
+
+zaps           324.1
+accounts       57
+```
+
+Verify the credentials first:
+
+```bash
+python main.py notify        # sends a test message
+```
+
+Delivery failure is logged and ignored, so a bad token never breaks a run. Set
+the same two variables on the remote if you want the cron cycle to report too.
+
 **Only one side may farm.** `data/accounts.json` holds *rotated* refresh
 tokens; if both machines run, each rotation invalidates the other's token. That
 is why `sync_accounts.sh` deliberately does **not** push `data/state.json` (the
@@ -613,6 +637,7 @@ src/conso/
   orchestrator.py             one-shot register -> earn -> loop chain
   ui.py                       Rich CLI output (banner, logs, summary, tables)
   monitor.py                  live single-panel monitor (header + progress + log tail)
+  notify.py                   optional Telegram run summaries
   cli.py                      typer CLI (16 subcommands)
   config.py                   env/.env settings
 scripts/                      setup_internal_solver.sh, setup/start_solver.sh (sidecar),

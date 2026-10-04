@@ -16,6 +16,7 @@ import os
 import random
 import sys
 import threading
+import time
 from datetime import datetime, timezone
 
 import typer
@@ -24,6 +25,7 @@ from . import economy
 from . import ui
 from .captcha import TURNSTILE_PAGE_URL, TURNSTILE_SITEKEY, build_solver, ensure_solver_ready
 from .monitor import get_monitor, start_monitor, stop_monitor
+from .notify import is_configured, notify as tg_notify, summary as tg_summary
 from .client import ConsoAPIError, ConsoClient
 from .config import Settings
 from .earnings import MISSIONS, run_earnings
@@ -175,6 +177,10 @@ def register(
         ("failed", failed),
         ("store", store.json_path),
     ], color="green" if ok else "red")
+    tg_notify("REGISTER DONE", [
+        ("active", f"{ok}/{len(results)}"),
+        ("failed", failed),
+    ], logger=_log)
 
     if earn and ok:
         _log(f"register: --earn set, farming {ok} new account(s)")
@@ -478,6 +484,10 @@ def loop(
             ("zaps", round(result.zaps, 2)),
             ("accounts", len(result.per_account)),
         ], color="green")
+        tg_notify("LOOP DONE", [
+            ("zaps", round(result.zaps, 2)),
+            ("accounts", len(result.per_account)),
+        ], logger=_log)
     else:
         ui.log("loop stopped", level="warn")
 
@@ -647,6 +657,24 @@ def pipeline(
         ("active", summary.get("active", 0)),
         ("earned zaps", round(summary.get("earned_zaps", 0.0), 2)),
     ], color="green")
+    tg_notify("PIPELINE DONE", [
+        ("registered", summary.get("registered", 0)),
+        ("active", summary.get("active", 0)),
+        ("earned zaps", round(summary.get("earned_zaps", 0.0), 2)),
+    ], logger=_log)
+
+
+@app.command(name="notify")
+def notify_cmd() -> None:
+    """Send a test Telegram message (verifies TELEGRAM_BOT_TOKEN/CHAT_ID)."""
+    if not is_configured():
+        ui.error("Telegram is not configured: set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in .env")
+        raise typer.Exit(1)
+    text = tg_summary("CONSO TEST", [("status", "ok"), ("time", time.strftime("%Y-%m-%d %H:%M:%S"))])
+    ui.log(f"notify: sending\n{text}")
+    tg_notify("CONSO TEST", [("status", "ok"), ("time", time.strftime("%Y-%m-%d %H:%M:%S"))],
+              logger=_log)
+    ui.log("notify: sent (check your Telegram)", level="ok")
 
 
 @app.command()

@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import os
 import random
+import socket
 import sys
 import threading
 import time
@@ -484,10 +485,14 @@ def loop(
             ("zaps", round(result.zaps, 2)),
             ("accounts", len(result.per_account)),
         ], color="green")
+        # Ratio against the practical daily budget (21 zaps/account).
+        target = 21.0 * max(1, len(result.per_account))
         tg_notify("LOOP DONE", [
             ("zaps", round(result.zaps, 2)),
             ("accounts", len(result.per_account)),
-        ], logger=_log)
+            ("avg / account", round(result.zaps / max(1, len(result.per_account)), 2)),
+        ], progress=("daily budget", min(1.0, result.zaps / target)),
+           footer=f"host: {socket.gethostname()}", logger=_log)
     else:
         ui.log("loop stopped", level="warn")
 
@@ -657,11 +662,13 @@ def pipeline(
         ("active", summary.get("active", 0)),
         ("earned zaps", round(summary.get("earned_zaps", 0.0), 2)),
     ], color="green")
+    _reg = int(summary.get("registered", 0) or 0)
     tg_notify("PIPELINE DONE", [
-        ("registered", summary.get("registered", 0)),
+        ("registered", _reg),
         ("active", summary.get("active", 0)),
         ("earned zaps", round(summary.get("earned_zaps", 0.0), 2)),
-    ], logger=_log)
+    ], progress=("success rate", (summary.get("active", 0) / _reg) if _reg else 0.0),
+       footer=f"host: {socket.gethostname()}", logger=_log)
 
 
 @app.command(name="notify")

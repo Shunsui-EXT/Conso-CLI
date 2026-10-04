@@ -527,6 +527,12 @@ Prefer `internal`. To use the sidecar anyway:
 python scripts/bench_solver.py --runs 3 --delay 20
 ```
 
+**`src/conso/cloak_solver.py`** (CloakBrowser stealth Chromium) exists as a
+third driver but is **not wired into `CAPTCHA_PROVIDER`** — on the same machine
+and IP it produced nothing in 110 s where Camoufox solved in 16 s. It is kept
+only because the CloakBrowser *Pro* build can run N concurrent sessions, which
+matters for per-worker proxy pinning. Do not switch to it expecting a speedup.
+
 ---
 
 ## Limits & anti-abuse

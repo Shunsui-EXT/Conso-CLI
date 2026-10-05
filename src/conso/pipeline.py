@@ -423,12 +423,18 @@ def farm_turns_for_account(
 
         # Read profile: boost factor + remaining daily budget.
         from .earnings import get_account_row
+        from .limits import get_daily_status
 
         row = get_account_row(client) or {}
         boost = float(row.get("boost_factor") or 1.0) or 1.0
-        daily_used = float(row.get("daily_zaps_earned") or 0.0)
+        # Use the stale-aware status: daily_zaps_earned is a raw counter that
+        # still reads yesterday's total until the first credit of the new day,
+        # so trusting it directly would skip an account that has actually
+        # reset. effective_daily returns 0 when the counter is from a past date.
+        status = get_daily_status(client)
+        daily_used = status.effective_daily if status else 0.0
         remaining = max(0.0, C.DAILY_ZAP_CAP - daily_used)
-        if row.get("is_banned"):
+        if row.get("is_banned") or (status and status.is_banned):
             _log(logger, f"farm: {record.email} banned — skipping")
             return 0, 0.0
         if remaining <= 0:

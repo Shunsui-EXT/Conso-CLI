@@ -86,8 +86,20 @@ class Store:
         os.replace(tmp_csv, self.csv_path)
 
     def add(self, account: AccountRecord) -> None:
+        """Insert a new account, or replace the existing row for that email.
+
+        Upsert, not append: callers routinely re-add a record after refreshing
+        its tokens (re-login, recover, farm), and appending would leave stale
+        duplicates behind — the store then reports two rows for one account and
+        a later read may pick the row holding an already-rotated refresh token.
+        """
         with self._lock:
-            self._accounts.append(account)
+            for i, existing in enumerate(self._accounts):
+                if existing.email == account.email:
+                    self._accounts[i] = account
+                    break
+            else:
+                self._accounts.append(account)
             self._flush_locked()
 
     def update(self, email: str, **fields: Any) -> None:

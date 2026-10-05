@@ -235,6 +235,7 @@ its flags.
 | `session` | Show/refresh stored sessions without re-login (`--force`) |
 | `recover` | Refresh → password → email OTP recovery (`--email`) |
 | `scripts/fix_account.py` | Re-establish a session when the stored refresh token went stale (`--email`) |
+| `scripts/relogin_all.py` | Re-establish every account's session (free refresh, then password grant) |
 | `scripts/sync_accounts.sh` | Push `data/accounts.json` to the remote host that runs the daily cycle |
 | `scripts/install_cron.sh` | Install/remove the daily `loop --once` cron job (run it on the remote) |
 | `status` | Daily-limit / earning state per account (`--email`) |
@@ -613,6 +614,7 @@ is why `sync_accounts.sh` deliberately does **not** push `data/state.json` (the
 | Turnstile solves all time out (`rate-flagged`) | The solve IP is flagged by Cloudflare — wait ~30 min, raise `SOLVER_SOLVE_DELAY`, use residential proxies, or switch to `CAPTCHA_PROVIDER=capsolver` / `2captcha`. |
 | Solver works locally but never on my VPS | The VPS **own IP** is the problem, not the install. Cloudflare will not issue a challenge to hosting ASNs (measured: residential ASN 4761 solved, AWS ASN 16509 timed out even though `conso.xyz` and `challenges.cloudflare.com` both returned 200). Registration needs Capsolver/2Captcha or a residential proxy. **Daily earning still works** — it reuses stored sessions and never touches the captcha, so `loop --once` runs fine on a VPS with a copied `data/accounts.json`. |
 | `account_banned` | A turn was submitted before onboarding, or the daily cap was passed. Use `status` to inspect. |
+| `refresh_token_already_used` on every account | The refresh tokens were rotated elsewhere (another host ran the cycle) so this store's copies are spent. Run `python scripts/relogin_all.py` — it tries the free refresh first and falls back to the password grant, which needs one captcha solve per account. |
 | `recover` keeps failing with `Token has expired or is invalid` | The inbox still holds the **previous** code, so the same expired OTP gets replayed. `scripts/fix_account.py --email ...` snapshots the old code first, requests a new one, waits until the code actually *changes*, then verifies — and sets a password so the next recovery uses the cheaper password grant. |
 | `signup_velocity_exceeded` | Too many signups from one IP — set `PROXY_FILE` (or `PROXY_URLS`) + `PROXY_PER_ACCOUNT=1`. Note: `PROXY_FILE` is for account traffic; `SOLVER_PROXY_FILE` is a different setting for the captcha solver only. |
 | Turnstile solves all time out | The solve IP is flagged — wait ~30 min, or raise `SOLVER_SOLVE_DELAY`, or use residential proxies. |
@@ -648,6 +650,7 @@ src/conso/
   config.py                   env/.env settings
 scripts/                      setup_internal_solver.sh, setup/start_solver.sh (sidecar),
                               fix_account.py (re-establish a stale session),
+                              relogin_all.py (bulk session recovery),
                               sync_accounts.sh (push store), install_cron.sh (daily cron),
                               bench_solver.py (compare solver providers),
                               parallel_register.sh, fetch_extension.sh, solver_watchdog.sh

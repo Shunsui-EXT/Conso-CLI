@@ -65,9 +65,26 @@ def _run(monkeypatch, credited_seq):
 
     calls = {"n": 0}
 
+    class _FakeResp:
+        status_code = 200
+
+        def json(self):
+            # consousers row: a fresh day, nothing earned yet
+            return [{"total_zaps": 0, "daily_zaps_earned": 0,
+                     "daily_zaps_date": "", "current_streak": 0,
+                     "longest_streak": 0, "is_banned": False, "boost_factor": 1.0}]
+
+    class _FakeTransport:
+        def request(self, *a, **k):
+            return _FakeResp()
+
     class FakeClient:
         def __init__(self, *a, **k):
             self.session = None
+            # farm_turns_for_account now reads the stale-aware daily status,
+            # which goes through the transport rather than a client method.
+            self.transport = _FakeTransport()
+            self.settings = Settings()
 
         def append_prompt(self, entry, zaps, spend):
             i = calls["n"]
